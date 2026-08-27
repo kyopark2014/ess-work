@@ -70,7 +70,6 @@ s3_prefix = "docs"
 s3_image_prefix = "images"
 
 path = config.get('sharing_url', '')
-doc_prefix = "docs/"
 
 model_name = "Claude 5.0 Sonnet"
 model_type = "claude"
@@ -1525,6 +1524,20 @@ def s3_uri_to_console_url(uri: str, region: str) -> str:
     return f"https://{region}.console.aws.amazon.com/s3/object/{bucket}?prefix={enc_key}"
 
 
+def s3_uri_to_sharing_url(uri: str, sharing_base: str | None = None) -> str | None:
+    """Map ``s3://bucket/key`` to ``{sharing_base}/key`` using the full object key."""
+    base = (sharing_base if sharing_base is not None else path) or ""
+    base = base.strip().rstrip("/")
+    if not uri or not uri.startswith("s3://") or not base:
+        return None
+    rest = uri[5:]
+    parts = rest.split("/", 1)
+    if len(parts) < 2 or not parts[1]:
+        return None
+    encoded = "/".join(parse.quote(seg) for seg in parts[1].split("/"))
+    return f"{base}/{encoded}"
+
+
 def retrieve(query):
     global knowledge_base_id
     
@@ -1609,9 +1622,11 @@ def retrieve(query):
                 uri = location["s3Location"]["uri"] if location["s3Location"]["uri"] is not None else ""
 
                 name = uri.split("/")[-1]
-                encoded_name = parse.quote(name)
                 if path:
-                    url = f"{path}/{doc_prefix}{encoded_name}"
+                    # Full S3 key (e.g. docs/{user}/file), not docs/{filename} only.
+                    url = s3_uri_to_sharing_url(uri, path) or s3_uri_to_console_url(
+                        uri, bedrock_region
+                    )
                 else:
                     url = s3_uri_to_console_url(uri, bedrock_region)
                 
