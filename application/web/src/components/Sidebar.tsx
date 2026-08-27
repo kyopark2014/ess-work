@@ -36,7 +36,7 @@ type DrawerKind =
   | null;
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
-const ESS_OPTIONS = ["Sync", "Document List", "Configure"] as const;
+const ESS_OPTIONS = ["Sync", "Regulations", "Configure"] as const;
 const KNOWLEDGE_ACTIONS = ["Sync", "Graph"] as const;
 
 function themeToLabel(theme: Theme): string {
@@ -149,7 +149,7 @@ export function Sidebar({
       handleSettingApplied();
       return;
     }
-    if (choice === "Document List") {
+    if (choice === "Regulations") {
       setEssDocListOpen(true);
       handleSettingApplied();
       return;
