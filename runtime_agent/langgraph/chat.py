@@ -2117,8 +2117,6 @@ def append_tool_guidance_to_prompt(system_prompt: str, mcp_servers: list) -> str
         extras.append(skill.MEMORY_RECALL_GUIDANCE)
 
     parallel_tools: list[str] = []
-    if "wiki" in selected:
-        parallel_tools.append("recall_wiki")
     if "tavily" in selected:
         parallel_tools.append("tavily_web_search")
     if "websearch" in selected:
@@ -2170,7 +2168,6 @@ async def create_agent(
     for server_name in (
         "memory",
         "graph memory",
-        "wiki",
         "kb-retriever",
         "knowledge base",
         "imageGeneration",

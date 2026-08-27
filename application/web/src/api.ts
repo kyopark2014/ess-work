@@ -97,63 +97,102 @@ export interface GraphStatus {
   next_eligible_at?: string | null;
 }
 
-export interface WikiStatus {
-  wiki_dir: string;
-  sources?: string[];
-  max_sources?: number;
-  exists: boolean;
-  path: string | null;
-  storage?: string;
+export type GraphPattern = "pattern1" | "pattern2" | "pattern3";
+
+export interface EssStatus {
+  ess_dir: string;
+  docs_dir?: string;
+  raw_dir?: string;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
+  doc_list?: string;
+  exists?: boolean;
   status: "idle" | "queued" | "running" | "ready" | "error" | "unchanged" | string;
-  pattern?: GraphPattern | string;
+  foundation_model_parser_enabled?: boolean;
   error?: string | null;
   message?: string | null;
   last_success_at?: string | null;
-  pid?: number | null;
+  progress?: {
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    page?: number | null;
+    page_n?: number | null;
+    pct?: number | null;
+  } | null;
 }
 
-export interface WikiSourcesConfig {
-  wiki_dir: string;
-  folders: string[];
-  urls: string[];
-  max_sources: number;
+export interface EssConfig {
+  ess_dir: string;
+  docs_dir?: string;
+  raw_dir?: string;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
   foundation_model_parser_enabled?: boolean;
 }
 
-export interface WikiUrlIngestResult {
-  wiki_dir: string;
-  url: string;
-  path: string;
-  urls: string[];
-  folders: string[];
-  max_sources: number;
+export interface EssDocument {
+  filename?: string;
+  original_filename?: string;
+  display_name?: string;
+  md_file?: string;
+  md_path?: string;
+  source_path?: string;
+  status?: string;
+  bytes?: number;
+  pdf_available?: boolean;
+  md_available?: boolean;
+  md_bytes?: number | null;
+  pdf_url?: string | null;
+  pdf_api_url?: string | null;
+  md_url?: string | null;
+  md_viewer_url?: string | null;
+  md_published?: boolean;
 }
 
-export interface WikiRawUploadResult {
-  wiki_dir: string;
-  raw_dir: string;
-  count: number;
-  saved: Array<{ name: string; path: string; bytes: number }>;
+export interface EssDocListResult {
+  ess_dir: string;
+  docs_dir?: string;
+  documents: EssDocument[];
+  doc_count?: number;
+  doc_list?: string;
+  doc_list_updated_at?: string | null;
+  sharing_url?: string | null;
 }
 
-export interface WikiRawPresignResult {
-  ok: boolean;
+export interface EssDocsPresignResult {
+  ok?: boolean;
   file_name: string;
+  original_filename?: string;
+  sanitized?: boolean;
   s3_key: string;
   content_type?: string;
   upload_url: string;
-  headers: Record<string, string>;
+  headers?: Record<string, string>;
   expires_in?: number;
+  docs_dir?: string;
 }
 
-export interface WikiBrowseResult {
-  path: string;
-  parent: string | null;
-  dirs: { name: string; path: string }[];
-  shortcuts: { name: string; path: string }[];
+export interface EssRawUploadResult {
+  ess_dir: string;
+  docs_dir?: string;
+  raw_dir: string;
+  saved: {
+    name: string;
+    original_filename?: string;
+    sanitized?: boolean;
+    path: string;
+    bytes: number;
+    overwritten?: boolean;
+  };
+  count: number;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
+  s3_key?: string;
 }
-
-export type GraphPattern = "pattern1" | "pattern2" | "pattern3";
 
 export interface SessionInfo {
   user_id: string;
@@ -167,130 +206,102 @@ export const api = {
     request<GraphStatus>(`/api/graph/rebuild${force ? "?force=1" : ""}`, {
       method: "POST",
     }),
-  getWikiStatus: () => request<WikiStatus>("/api/wiki/status"),
-  syncWiki: (full = false) =>
-    request<WikiStatus>(`/api/wiki/sync${full ? "?full=1" : ""}`, {
-      method: "POST",
-    }),
-  setWikiGraphPattern: (pattern: GraphPattern | string) =>
-    request<WikiStatus>("/api/wiki/pattern", {
-      method: "PATCH",
-      body: JSON.stringify({ pattern }),
-    }),
-  getWikiSources: () => request<WikiSourcesConfig>("/api/wiki/sources"),
-  putWikiSources: (body: {
-    folders: string[];
-    foundation_model_parser_enabled?: boolean;
-  }) =>
-    request<WikiSourcesConfig>("/api/wiki/sources", {
+  getEssStatus: () => request<EssStatus>("/api/ess/status"),
+  getEssConfig: () => request<EssConfig>("/api/ess/config"),
+  getEssDocList: (publishMd = true) =>
+    request<EssDocListResult>(
+      `/api/ess/doc-list${publishMd ? "" : "?publish_md=0"}`,
+    ),
+  putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
+    request<EssConfig>("/api/ess/config", {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  ingestWikiUrl: (url: string) =>
-    request<WikiUrlIngestResult>("/api/wiki/urls", {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  uploadWikiRawFiles: async (files: File[]): Promise<WikiRawUploadResult> => {
-    if (!files.length) {
-      throw new Error("업로드할 파일이 없습니다.");
-    }
+  uploadEssRawFile: async (file: File): Promise<EssRawUploadResult> => {
     // Presigned PUT: browser → S3 directly (avoids ECS/ALB ~80MB body limits).
-    uiLog("wiki:raw upload start", { count: files.length });
+    uiLog("ess:upload start", { name: file.name, size: file.size });
 
-    const saved: WikiRawUploadResult["saved"] = [];
-    let wikiDir = "";
-    let rawDir = "";
+    const presign = await request<EssDocsPresignResult>("/api/ess/docs/presign", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: file.name,
+        size: file.size,
+        content_type: file.type || undefined,
+      }),
+    });
+    if (!presign.upload_url || !presign.s3_key) {
+      throw new Error("Presign succeeded but no upload URL was returned");
+    }
 
-    for (const file of files) {
-      const presign = await request<WikiRawPresignResult>("/api/wiki/raw/presign", {
-        method: "POST",
-        body: JSON.stringify({
-          file_name: file.name,
-          size: file.size,
-          content_type: file.type || undefined,
-        }),
+    uiLog("ess:upload put start", {
+      name: presign.file_name,
+      s3_key: presign.s3_key,
+      size: file.size,
+      host: (() => {
+        try {
+          return new URL(presign.upload_url).host;
+        } catch {
+          return "";
+        }
+      })(),
+    });
+
+    const putHeaders = new Headers(presign.headers || {});
+    if (!putHeaders.has("Content-Type")) {
+      putHeaders.set(
+        "Content-Type",
+        presign.content_type || "application/octet-stream",
+      );
+    }
+    let putRes: Response;
+    try {
+      putRes = await fetch(presign.upload_url, {
+        method: "PUT",
+        body: file,
+        headers: putHeaders,
       });
-      if (!presign.upload_url || !presign.s3_key) {
-        throw new Error("Presign succeeded but no upload URL was returned");
-      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      uiError("ess:upload put network error", { detail });
+      throw new Error(`S3 직접 업로드 네트워크 오류: ${detail}`);
+    }
+    if (!putRes.ok) {
+      const text = await putRes.text();
+      uiError("ess:upload put failed", { status: putRes.status, body: text });
+      const codeMatch = text.match(/<Code>([^<]+)<\/Code>/i);
+      const msgMatch = text.match(/<Message>([^<]+)<\/Message>/i);
+      const s3Detail =
+        codeMatch || msgMatch
+          ? [codeMatch?.[1], msgMatch?.[1]].filter(Boolean).join(": ")
+          : "";
+      throw new Error(
+        s3Detail ||
+          text.slice(0, 200) ||
+          putRes.statusText ||
+          `Direct S3 upload failed (HTTP ${putRes.status})`,
+      );
+    }
 
-      uiLog("wiki:raw put start", {
-        name: presign.file_name,
+    const data = await request<EssRawUploadResult>("/api/ess/docs/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: presign.file_name,
         s3_key: presign.s3_key,
         size: file.size,
-        host: (() => {
-          try {
-            return new URL(presign.upload_url).host;
-          } catch {
-            return "";
-          }
-        })(),
-      });
-
-      const putHeaders = new Headers(presign.headers || {});
-      if (!putHeaders.has("Content-Type")) {
-        putHeaders.set(
-          "Content-Type",
-          presign.content_type || "application/octet-stream",
-        );
-      }
-      let putRes: Response;
-      try {
-        putRes = await fetch(presign.upload_url, {
-          method: "PUT",
-          body: file,
-          headers: putHeaders,
-        });
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        uiError("wiki:raw put network error", { detail });
-        throw new Error(`S3 직접 업로드 네트워크 오류: ${detail}`);
-      }
-      if (!putRes.ok) {
-        const text = await putRes.text();
-        uiError("wiki:raw put failed", { status: putRes.status, body: text });
-        const codeMatch = text.match(/<Code>([^<]+)<\/Code>/i);
-        const msgMatch = text.match(/<Message>([^<]+)<\/Message>/i);
-        const s3Detail =
-          codeMatch || msgMatch
-            ? [codeMatch?.[1], msgMatch?.[1]].filter(Boolean).join(": ")
-            : "";
-        throw new Error(
-          s3Detail ||
-            text.slice(0, 200) ||
-            putRes.statusText ||
-            `Direct S3 upload failed (HTTP ${putRes.status})`,
-        );
-      }
-
-      const part = await request<WikiRawUploadResult>("/api/wiki/raw/complete", {
-        method: "POST",
-        body: JSON.stringify({
-          file_name: presign.file_name,
-          s3_key: presign.s3_key,
-          size: file.size,
-        }),
-      });
-      wikiDir = part.wiki_dir || wikiDir;
-      rawDir = part.raw_dir || rawDir;
-      if (part.saved?.length) {
-        saved.push(...part.saved);
-      }
-    }
-
-    const data: WikiRawUploadResult = {
-      wiki_dir: wikiDir,
-      raw_dir: rawDir,
-      saved,
-      count: saved.length,
-    };
-    uiLog("wiki:raw upload complete", data);
+        original_filename: presign.original_filename || file.name,
+      }),
+    });
+    uiLog("ess:upload ok", { name: data.saved?.name, s3_key: data.s3_key });
     return data;
   },
-  browseWikiSources: (path?: string) => {
-    const q = path ? `?path=${encodeURIComponent(path)}` : "";
-    return request<WikiBrowseResult>(`/api/wiki/browse${q}`);
+  syncEss: (full = false, model?: string) => {
+    const params = new URLSearchParams();
+    if (full) params.set("full", "1");
+    if (model?.trim()) params.set("model", model.trim());
+    const qs = params.toString();
+    return request<EssStatus>(`/api/ess/sync${qs ? `?${qs}` : ""}`, {
+      method: "POST",
+    });
   },
   getSession: () => request<SessionInfo | null>("/api/session"),
   login: (username: string, password: string) =>

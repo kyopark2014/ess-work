@@ -14,6 +14,11 @@ import {
   collectClipboardImages,
   useFileUpload,
 } from "../hooks/useFileUpload";
+import {
+  consumePendingLoadFile,
+  ESS_ATTACH_FILE_EVENT,
+} from "../pendingLoadFile";
+import type { LoadedFile } from "../hooks/useFileUpload";
 
 interface QueuedMessage {
   id: string;
@@ -33,15 +38,12 @@ interface Props {
   onStop?: () => void;
   onSend: (text: string, files?: string[]) => void;
   onRagUploadComplete?: (message: string) => void;
-  onWikiUploadComplete?: (message: string) => void;
 }
 
 const RAG_ACCEPT =
   ".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.json,.py,.js";
 const LOAD_ACCEPT =
   ".pdf,.txt,.md,.markdown,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.json,.py,.js,.ts,.tsx,.jsx,.yml,.yaml,.xml,.rst,.png,.jpg,.jpeg,.webp,.gif";
-const WIKI_ACCEPT =
-  ".pdf,.md,.txt,.markdown,.rst,.docx,.pptx,.csv,.json,.html,.htm,application/pdf,text/plain,text/markdown";
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif";
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 160;
@@ -65,7 +67,6 @@ export function ChatInput({
   onStop,
   onSend,
   onRagUploadComplete,
-  onWikiUploadComplete,
 }: Props) {
   const [value, setValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -79,7 +80,6 @@ export function ChatInput({
   const addBtnRef = useRef<HTMLButtonElement>(null);
   const inputWrapRef = useRef<HTMLFormElement>(null);
   const ragInputRef = useRef<HTMLInputElement>(null);
-  const wikiInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const loadInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -97,7 +97,7 @@ export function ChatInput({
     uploadImageFiles,
     loadWorkspaceFiles,
     uploadRagFiles,
-    uploadWikiFiles,
+    attachExistingFile,
     removeAttachment,
     removeLoadedFile,
     clearAttachments,
@@ -106,6 +106,19 @@ export function ChatInput({
     onDragLeave,
     onDrop,
   } = useFileUpload({ disabled });
+
+  // Document List 「복사」 → attach md chip immediately (no Load files step required).
+  useEffect(() => {
+    function onEssAttachFile(e: Event) {
+      const detail = (e as CustomEvent<LoadedFile>).detail;
+      if (!detail?.path) return;
+      attachExistingFile(detail);
+    }
+    window.addEventListener(ESS_ATTACH_FILE_EVENT, onEssAttachFile);
+    return () => {
+      window.removeEventListener(ESS_ATTACH_FILE_EVENT, onEssAttachFile);
+    };
+  }, [attachExistingFile]);
 
   function adjustInputHeight() {
     const el = textareaRef.current;
@@ -231,6 +244,12 @@ export function ChatInput({
   function openLoadFiles() {
     setMenuOpen(false);
     clearUploadError();
+    // Document List 「복사」로 스테이징된 md 경로는 파일 선택 없이 바로 첨부.
+    const pending = consumePendingLoadFile();
+    if (pending) {
+      attachExistingFile(pending);
+      return;
+    }
     loadInputRef.current?.click();
   }
 
@@ -238,12 +257,6 @@ export function ChatInput({
     setMenuOpen(false);
     clearUploadError();
     ragInputRef.current?.click();
-  }
-
-  function openWikiUpload() {
-    setMenuOpen(false);
-    clearUploadError();
-    wikiInputRef.current?.click();
   }
 
   async function onImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
@@ -264,13 +277,6 @@ export function ChatInput({
     e.target.value = "";
     if (files.length === 0) return;
     await uploadRagFiles(files, onRagUploadComplete);
-  }
-
-  async function onWikiFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (files.length === 0) return;
-    await uploadWikiFiles(files, onWikiUploadComplete);
   }
 
   const inputDisabled = disabled || uploading;
@@ -394,36 +400,6 @@ export function ChatInput({
                 <span className="chat-add-menu-label">Upload to RAG</span>
                 <span className="chat-add-menu-desc">
                   S3로 직접 업로드하고 Knowledge Base 동기화
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              className="chat-add-menu-item"
-              role="menuitem"
-              onClick={openWikiUpload}
-            >
-              <span className="chat-add-menu-icon" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 16 16">
-                  <path
-                    d="M3.5 2.5h3.2L8 4.2l1.3-1.7h3.2v11H9.3L8 11.8l-1.3 1.7H3.5z"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M8 4.2v7.6"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                  />
-                </svg>
-              </span>
-              <span className="chat-add-menu-text">
-                <span className="chat-add-menu-label">Upload to Wiki</span>
-                <span className="chat-add-menu-desc">
-                  S3로 직접 업로드 후 Wiki Sync
                 </span>
               </span>
             </button>
@@ -564,16 +540,6 @@ export function ChatInput({
           accept={RAG_ACCEPT}
           multiple
           onChange={onRagFileSelected}
-          tabIndex={-1}
-          aria-hidden="true"
-        />
-        <input
-          ref={wikiInputRef}
-          type="file"
-          className="chat-file-input"
-          accept={WIKI_ACCEPT}
-          multiple
-          onChange={onWikiFileSelected}
           tabIndex={-1}
           aria-hidden="true"
         />

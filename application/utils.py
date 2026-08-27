@@ -122,538 +122,238 @@ def user_graph_html_path(user_id: str | None) -> str:
     segment = sanitize_user_path_segment(user_id) or "default"
     return os.path.join(SESSION_STORAGE_DIR, segment, "graph", "out", "graph.html")
 
-def get_user_wiki_dir(user_id: str | None) -> str:
-    """Per-user wiki root: ``{SESSION_STORAGE_DIR}/{user_id}/wiki``.
-
-    Replaces the old global ``AGENT_WIKI_DIR`` (~/Documents/wiki) so each
-    login user gets an isolated raw/ + graphify-out/ tree.
-    """
+def get_user_ess_dir(user_id: str | None) -> str:
+    """Per-user ESS root: ``{SESSION_STORAGE_DIR}/{user_id}/ess``."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         segment = "default"
-    return os.path.join(SESSION_STORAGE_DIR, segment, "wiki")
+    return os.path.join(SESSION_STORAGE_DIR, segment, "ess")
 
 
-def get_wiki_dir(user_id: str | None = None) -> str:
-    """Alias for :func:`get_user_wiki_dir` (requires ``user_id`` in multi-user use)."""
-    return get_user_wiki_dir(user_id)
+def _ensure_ess_on_path() -> str:
+    """Put ``ess-work/ess`` on ``sys.path`` so ``doc_list`` is importable."""
+    ess_pkg = os.path.join(os.path.dirname(script_dir), "ess")
+    if ess_pkg not in sys.path:
+        sys.path.insert(0, ess_pkg)
+    return ess_pkg
 
 
-def ensure_user_wiki_dir(user_id: str | None) -> str:
-    """Create ``{user}/wiki``, ``raw/``, ``graphify-out/`` and return wiki root."""
+def ensure_user_ess_dir(user_id: str | None) -> str:
+    """Create ``{user}/ess``, ``docs/``, ``out/``, ``out/converted/`` and return ESS root."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         raise ValueError(
-            "Invalid user_id for wiki path; expected a plain user id, "
+            "Invalid user_id for ess path; expected a plain user id, "
             "not a signed session cookie"
         )
-    wiki = os.path.join(SESSION_STORAGE_DIR, segment, "wiki")
-    for name in ("", "raw", "graphify-out", os.path.join("graphify-out", "converted")):
-        os.makedirs(os.path.join(wiki, name) if name else wiki, exist_ok=True)
-    logger.info("user wiki dir ready: %s", wiki)
-    return wiki
-
-
-def ensure_wiki_dir(user_id: str | None = None) -> str:
-    """Alias for :func:`ensure_user_wiki_dir`."""
-    return ensure_user_wiki_dir(user_id)
-
-
-def wiki_graphify_out_dir(user_id: str | None = None) -> str:
-    """``{SESSION_STORAGE}/{user}/wiki/graphify-out``."""
-    return os.path.join(get_user_wiki_dir(user_id), "graphify-out")
-
-
-def wiki_graph_html_path(user_id: str | None = None) -> str:
-    """Pattern UI HTML served by /api/wiki/graph (Force Atlas / Neo4j / Holistic)."""
-    return os.path.join(wiki_graphify_out_dir(user_id), "app-graph.html")
-
-
-def wiki_graph_json_path(user_id: str | None = None) -> str:
-    return os.path.join(wiki_graphify_out_dir(user_id), "graph.json")
-
-
-def wiki_graph_pattern_path(user_id: str | None = None) -> str:
-    return os.path.join(wiki_graphify_out_dir(user_id), ".wiki_graph_pattern")
-
-
-def get_wiki_graph_pattern(user_id: str | None = None) -> str:
-    """Selected Wiki Graph HTML pattern (pattern1|2|3)."""
-    path = wiki_graph_pattern_path(user_id)
-    if os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = f.read().strip()
-            if raw:
-                return normalize_graph_pattern(raw)
-        except OSError:
-            pass
-    return DEFAULT_GRAPH_PATTERN
-
-
-def set_wiki_graph_pattern(
-    pattern: object | None, user_id: str | None = None
-) -> str:
-    """Persist Wiki Graph pattern under the user's graphify-out."""
-    pid = normalize_graph_pattern(pattern)
-    out = wiki_graphify_out_dir(user_id)
-    os.makedirs(out, exist_ok=True)
-    with open(wiki_graph_pattern_path(user_id), "w", encoding="utf-8") as f:
-        f.write(pid + "\n")
-    return pid
-
-
-MAX_WIKI_SOURCE_FOLDERS = 3
-
-
-def wiki_sources_path(user_id: str | None = None) -> str:
-    """Per-user sources file: ``{SESSION_STORAGE}/{user}/wiki/wiki_sources.json``."""
-    return os.path.join(get_user_wiki_dir(user_id), "wiki_sources.json")
-
-
-def _normalize_wiki_source_path(value: object | None) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    return os.path.abspath(os.path.expanduser(raw))
-
-
-def _normalize_wiki_source_url(value: object | None) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    lower = raw.lower()
-    if not (lower.startswith("http://") or lower.startswith("https://")):
-        raise ValueError(f"URL은 http:// 또는 https:// 로 시작해야 합니다: {raw}")
-    return raw
-
-
-def _default_wiki_sources_doc() -> dict[str, list[str]]:
-    return {
-        "AGENT_WIKI_SOURCES": [],
-        "AGENT_WIKI_URLS": [],
-        "AGENT_WIKI_FILES": [],
-    }
-
-
-def _read_wiki_sources_file(path: str) -> dict[str, list[str]] | None:
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        if not isinstance(raw, dict):
-            return None
-        doc = _default_wiki_sources_doc()
-        folders = raw.get("AGENT_WIKI_SOURCES")
-        urls = raw.get("AGENT_WIKI_URLS")
-        files = raw.get("AGENT_WIKI_FILES")
-        if isinstance(folders, list):
-            doc["AGENT_WIKI_SOURCES"] = [str(x) for x in folders]
-        if isinstance(urls, list):
-            doc["AGENT_WIKI_URLS"] = [str(x) for x in urls]
-        if isinstance(files, list):
-            doc["AGENT_WIKI_FILES"] = [str(x) for x in files]
-        return doc
-    except Exception as e:
-        logger.warning("Failed to load wiki sources %s: %s", path, e)
-        return None
-
-
-def load_wiki_sources(user_id: str | None = None) -> dict[str, list[str]]:
-    """Load Wiki Sync folders/URLs/files from ``{user}/wiki/wiki_sources.json``."""
-    path = wiki_sources_path(user_id)
-    doc = _read_wiki_sources_file(path)
-    if doc is not None:
-        return doc
-    return _default_wiki_sources_doc()
-
-
-def _write_wiki_sources_doc(
-    doc: dict[str, list[str]], *, user_id: str | None = None
-) -> None:
-    ensure_user_wiki_dir(user_id)
-    path = wiki_sources_path(user_id)
-    payload = {
-        "AGENT_WIKI_SOURCES": list(doc.get("AGENT_WIKI_SOURCES") or []),
-        "AGENT_WIKI_URLS": list(doc.get("AGENT_WIKI_URLS") or []),
-        "AGENT_WIKI_FILES": list(doc.get("AGENT_WIKI_FILES") or []),
-    }
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
-
-
-def get_wiki_source_folders(user_id: str | None = None) -> list[str]:
-    """Configured Wiki Sync source folders (max 3) for the user.
-
-    Empty list → Sync falls back to ``{wiki}/raw`` if present, else wiki root.
-    """
-    raw = load_wiki_sources(user_id).get("AGENT_WIKI_SOURCES") or []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        path = _normalize_wiki_source_path(item)
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        out.append(path)
-        if len(out) >= MAX_WIKI_SOURCE_FOLDERS:
-            break
-    return out
-
-
-def get_wiki_source_urls(user_id: str | None = None) -> list[str]:
-    """Append-only URL ingest history for the user (audit trail)."""
-    raw = load_wiki_sources(user_id).get("AGENT_WIKI_URLS") or []
-    out: list[str] = []
-    for item in raw:
-        try:
-            url = _normalize_wiki_source_url(item)
-        except ValueError:
-            text = str(item or "").strip()
-            if text:
-                out.append(text)
-            continue
-        if url:
-            out.append(url)
-    return out
-
-
-def get_wiki_source_files(user_id: str | None = None) -> list[str]:
-    """Append-only uploaded document paths under ``{wiki}/raw``."""
-    raw = load_wiki_sources(user_id).get("AGENT_WIKI_FILES") or []
-    out: list[str] = []
-    for item in raw:
-        path = _normalize_wiki_source_path(item)
-        if path:
-            out.append(path)
-    return out
-
-
-def append_wiki_source_files(
-    paths: list[str], *, user_id: str | None = None
-) -> list[str]:
-    """Append saved raw document paths to wiki_sources.json (dedupe by path)."""
-    doc = load_wiki_sources(user_id)
-    history = list(doc.get("AGENT_WIKI_FILES") or [])
-    seen = {os.path.abspath(os.path.expanduser(p)) for p in history if p}
-    added = 0
-    for item in paths:
-        path = _normalize_wiki_source_path(item)
-        if not path or path in seen:
-            continue
-        history.append(path)
-        seen.add(path)
-        added += 1
-    _write_wiki_sources_doc(
-        {
-            "AGENT_WIKI_SOURCES": list(doc.get("AGENT_WIKI_SOURCES") or []),
-            "AGENT_WIKI_URLS": list(doc.get("AGENT_WIKI_URLS") or []),
-            "AGENT_WIKI_FILES": history,
-        },
-        user_id=user_id,
-    )
-    if added:
-        logger.info(
-            "wiki sources appended files user=%s count=%s",
-            sanitize_user_path_segment(user_id) or "default",
-            added,
-        )
-    return history
-
-
-def set_wiki_source_folders(
-    folders: list[object] | None, user_id: str | None = None
-) -> list[str]:
-    """Persist up to 3 Wiki Sync source folders for the user."""
-    return set_wiki_sources(folders=folders, user_id=user_id)["folders"]
-
-
-def browse_wiki_source_dirs(
-    path: object | None = None, *, user_id: str | None = None
-) -> dict[str, object]:
-    """List child directories for the Wiki Configure source picker."""
-    home = os.path.abspath(os.path.expanduser("~"))
-    documents = os.path.join(home, "Documents")
-    wiki = get_user_wiki_dir(user_id)
-
-    raw = str(path or "").strip()
-    if raw:
-        target = _normalize_wiki_source_path(raw)
-    elif os.path.isdir(documents):
-        target = documents
-    else:
-        target = home
-    if not target or not os.path.isdir(target):
-        raise ValueError(f"폴더가 없습니다: {raw or target}")
-
-    parent = os.path.dirname(target)
-    if parent == target:
-        parent = None
-
-    entries: list[dict[str, str]] = []
-    try:
-        names = sorted(os.listdir(target), key=str.lower)
-    except OSError as exc:
-        raise ValueError(f"폴더를 읽을 수 없습니다: {target}") from exc
-
-    for name in names:
-        if name.startswith("."):
-            continue
-        child = os.path.join(target, name)
-        if not os.path.isdir(child):
-            continue
-        entries.append({"name": name, "path": child})
-
-    shortcuts: list[dict[str, str]] = []
-    for name, candidate in (
-        ("Home", home),
-        ("Documents", documents),
-        ("Wiki", wiki),
-        ("Wiki raw", os.path.join(wiki, "raw")),
+    ess_dir = os.path.join(SESSION_STORAGE_DIR, segment, "ess")
+    for name in (
+        "",
+        "docs",
+        "out",
+        os.path.join("out", "converted"),
+        os.path.join("out", "converted", ".pdf_pages"),
     ):
-        if os.path.isdir(candidate):
-            shortcuts.append({"name": name, "path": candidate})
+        os.makedirs(os.path.join(ess_dir, name) if name else ess_dir, exist_ok=True)
+    try:
+        _ensure_ess_on_path()
+        from doc_list import (
+            doc_list_path,
+            empty_doc_list,
+            migrate_raw_to_docs,
+            save_doc_list,
+            sync_doc_list_with_filesystem,
+        )
 
-    return {
-        "path": target,
-        "parent": parent,
-        "dirs": entries,
-        "shortcuts": shortcuts,
-    }
-
-
-def append_wiki_source_url(
-    url: str, *, user_id: str | None = None
-) -> list[str]:
-    """Append a URL to the user's ingest history."""
-    normalized = _normalize_wiki_source_url(url)
-    if not normalized:
-        raise ValueError("URL이 비어 있습니다.")
-    doc = load_wiki_sources(user_id)
-    history = list(doc.get("AGENT_WIKI_URLS") or [])
-    history.append(normalized)
-    folders = list(doc.get("AGENT_WIKI_SOURCES") or [])
-    files = list(doc.get("AGENT_WIKI_FILES") or [])
-    _write_wiki_sources_doc(
-        {
-            "AGENT_WIKI_SOURCES": folders,
-            "AGENT_WIKI_URLS": history,
-            "AGENT_WIKI_FILES": files,
-        },
-        user_id=user_id,
-    )
-    logger.info(
-        "wiki sources appended URL user=%s history=%s",
-        sanitize_user_path_segment(user_id) or "default",
-        normalized,
-    )
-    return history
+        migrate_raw_to_docs(ess_dir)
+        if not doc_list_path(ess_dir).is_file():
+            docs = os.path.join(ess_dir, "docs")
+            has_files = os.path.isdir(docs) and any(
+                os.path.isfile(os.path.join(docs, n)) for n in os.listdir(docs)
+            )
+            if has_files:
+                sync_doc_list_with_filesystem(ess_dir, user_id=segment)
+            else:
+                save_doc_list(ess_dir, empty_doc_list(user_id=segment))
+    except Exception:
+        logger.debug("ess doc_list ensure skipped", exc_info=True)
+    logger.debug("user ess dir ready: %s", ess_dir)
+    return ess_dir
 
 
-def ingest_wiki_url(url: str, *, user_id: str | None = None) -> dict[str, object]:
-    """Fetch a URL into the user's ``{wiki}/raw`` and append URL history."""
-    from pathlib import Path
-
-    from graphify.ingest import ingest
-
-    normalized = _normalize_wiki_source_url(url)
-    if not normalized:
-        raise ValueError("URL이 비어 있습니다.")
-    wiki = Path(ensure_user_wiki_dir(user_id))
-    raw_dir = wiki / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    path = ingest(normalized, raw_dir)
-    history = append_wiki_source_url(normalized, user_id=user_id)
-    return {"url": normalized, "path": str(path), "urls": history}
+def ess_converted_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/out/converted``."""
+    return os.path.join(ess_out_dir(user_id), "converted")
 
 
-def _wiki_raw_dest_path(raw_dir: "Path", filename: str) -> "Path":
-    """Sanitize upload name under ``raw/``. Same name → overwrite."""
-    from pathlib import Path
+def ess_docs_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/docs`` (legacy: ``raw``)."""
+    ess = get_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    legacy = os.path.join(ess, "raw")
+    if not os.path.isdir(docs) and os.path.isdir(legacy):
+        try:
+            _ensure_ess_on_path()
+            from doc_list import migrate_raw_to_docs
 
-    raw_dir = Path(raw_dir)
-    name = Path(str(filename or "").strip() or "upload.bin").name
-    # Block path traversal in uploaded names.
-    name = name.replace("\x00", "").replace("/", "_").replace("\\", "_")
-    if not name or name in (".", ".."):
-        name = "upload.bin"
-    return raw_dir / name
+            migrate_raw_to_docs(ess)
+        except Exception:
+            pass
+    return docs
 
 
-def save_wiki_raw_uploads(
-    files: list[tuple[str, bytes]],
+def ess_raw_dir(user_id: str | None = None) -> str:
+    """Deprecated alias for :func:`ess_docs_dir`."""
+    return ess_docs_dir(user_id)
+
+
+def ess_out_dir(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "out")
+
+
+def ess_doc_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "doc_list.json")
+
+
+def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
+    """Return ``(dest_path, sanitized_name, original_basename)``.
+
+    Sanitizes at upload time (spaces → ``_``, unsafe chars stripped).
+    """
+    original = os.path.basename((filename or "").strip()) or "upload.bin"
+    original = original.replace("\x00", "_") or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe = sanitize_ess_filename(original)
+    except Exception:
+        safe = original.replace(" ", "_")
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in safe)
+        while "__" in safe:
+            safe = safe.replace("__", "_")
+        stem, ext = os.path.splitext(safe)
+        safe = f"{stem.strip('._-') or 'document'}{ext.lower()}"
+    return os.path.join(docs_dir, safe), safe, original
+
+
+def save_ess_doc_upload(
+    filename: str,
+    data: bytes,
     *,
     user_id: str | None = None,
 ) -> dict[str, object]:
-    """Write uploaded files into ``{user}/wiki/raw`` (overwrite same filename)."""
-    from pathlib import Path
-
-    if not files:
-        raise ValueError("업로드할 파일이 없습니다.")
-
-    wiki = Path(ensure_user_wiki_dir(user_id))
-    raw_dir = wiki / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
-    saved: list[dict[str, object]] = []
-    for filename, data in files:
-        if data is None:
-            continue
-        dest = _wiki_raw_dest_path(raw_dir, filename)
-        overwritten = dest.is_file()
-        dest.write_bytes(data)
-        saved.append(
-            {
-                "name": dest.name,
-                "path": str(dest),
-                "bytes": len(data),
-                "overwritten": overwritten,
-            }
-        )
-        logger.info(
-            "wiki raw upload user=%s → %s (%s bytes%s)",
-            sanitize_user_path_segment(user_id) or "default",
-            dest,
-            len(data),
-            ", overwrite" if overwritten else "",
-        )
-
-    if not saved:
+    """Sanitize filename, write into ``{user}/ess/docs``, update doc_list."""
+    if data is None or len(data) == 0:
         raise ValueError("저장할 파일이 없습니다.")
 
-    file_history = append_wiki_source_files(
-        [str(item["path"]) for item in saved],
-        user_id=user_id,
-    )
+    ess = ensure_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    os.makedirs(docs, exist_ok=True)
+    dest, safe_name, original_name = _ess_docs_dest_path(docs, filename)
+    overwritten = os.path.isfile(dest)
+    with open(dest, "wb") as f:
+        f.write(data)
 
-    return {
-        "wiki_dir": str(wiki),
-        "raw_dir": str(raw_dir),
-        "saved": saved,
-        "count": len(saved),
-        "files": file_history,
-    }
+    segment = sanitize_user_path_segment(user_id) or "default"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import upsert_document
 
-
-
-def save_wiki_raw_from_s3(
-    *,
-    file_name: str,
-    s3_key: str,
-    user_id: str | None = None,
-    expected_size: int | None = None,
-) -> dict[str, object]:
-    """Copy a browser-staged S3 object into ``{user}/wiki/raw`` and register it.
-
-    Used by ``POST /api/wiki/raw/complete`` after a presigned PUT.
-    """
-    from pathlib import Path
-
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    expected_key = wiki_raw_upload_s3_key(safe_name, user_id=user_id)
-    key = (s3_key or "").strip()
-    if key != expected_key:
-        raise ValueError("Invalid upload target")
-
-    head = head_session_upload_object(key)
-    if not head:
-        raise FileNotFoundError("Uploaded object not found")
-    content_length = int(head.get("content_length") or 0)
-    if content_length <= 0:
-        raise ValueError("Empty file")
-    if expected_size is not None and content_length != expected_size:
-        raise ValueError(
-            f"Uploaded size mismatch (expected {expected_size}, got {content_length})"
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="uploaded",
+            user_id=segment,
+            extra={
+                "original_filename": original_name,
+                "sanitized": original_name != safe_name,
+            },
         )
+    except Exception:
+        logger.exception("Failed to update ess doc_list after upload")
 
-    wiki = Path(ensure_user_wiki_dir(user_id))
-    raw_dir = wiki / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    dest = _wiki_raw_dest_path(raw_dir, safe_name)
-    overwritten = dest.is_file()
-    size = download_s3_object_to_path(key, str(dest))
-    if size <= 0:
-        raise ValueError("Empty file")
-    if expected_size is not None and size != expected_size:
-        raise ValueError(
-            f"Downloaded size mismatch (expected {expected_size}, got {size})"
-        )
-
-    saved = {
-        "name": dest.name,
-        "path": str(dest),
-        "bytes": size,
-        "overwritten": overwritten,
-        "s3_key": key,
-    }
     logger.info(
-        "wiki raw from S3 user=%s → %s (%s bytes%s)",
-        sanitize_user_path_segment(user_id) or "default",
+        "ess docs upload user=%s → %s (original=%s, %s bytes%s)",
+        segment,
         dest,
-        size,
+        original_name,
+        len(data),
         ", overwrite" if overwritten else "",
     )
-    file_history = append_wiki_source_files([str(dest)], user_id=user_id)
     return {
-        "wiki_dir": str(wiki),
-        "raw_dir": str(raw_dir),
-        "saved": [saved],
-        "count": 1,
-        "files": file_history,
-    }
-
-
-def set_wiki_sources(
-    *,
-    folders: list[object] | None = None,
-    user_id: str | None = None,
-) -> dict[str, list[str]]:
-    """Persist Wiki Sync folders for the user (URL/file history preserved)."""
-    doc = load_wiki_sources(user_id)
-    url_history = list(doc.get("AGENT_WIKI_URLS") or [])
-    file_history = list(doc.get("AGENT_WIKI_FILES") or [])
-
-    if folders is None:
-        cleaned_folders = get_wiki_source_folders(user_id)
-    else:
-        cleaned_folders = []
-        seen_f: set[str] = set()
-        for item in folders or []:
-            path = _normalize_wiki_source_path(item)
-            if not path or path in seen_f:
-                continue
-            if not os.path.isdir(path):
-                raise ValueError(f"폴더가 없습니다: {path}")
-            seen_f.add(path)
-            cleaned_folders.append(path)
-            if len(cleaned_folders) >= MAX_WIKI_SOURCE_FOLDERS:
-                break
-
-    _write_wiki_sources_doc(
-        {
-            "AGENT_WIKI_SOURCES": cleaned_folders,
-            "AGENT_WIKI_URLS": url_history,
-            "AGENT_WIKI_FILES": file_history,
+        "ess_dir": ess,
+        "docs_dir": docs,
+        "raw_dir": docs,  # backward-compatible key
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
         },
-        user_id=user_id,
-    )
-    logger.info(
-        "wiki sources saved user=%s folders=%s url_history=%s files=%s",
-        sanitize_user_path_segment(user_id) or "default",
-        cleaned_folders,
-        len(url_history),
-        len(file_history),
-    )
-    return {
-        "folders": cleaned_folders,
-        "urls": get_wiki_source_urls(user_id),
-        "files": get_wiki_source_files(user_id),
+        "count": 1,
+        "doc_list": ess_doc_list_path(user_id),
     }
 
+
+def save_ess_raw_upload(
+    filename: str,
+    data: bytes,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    """Deprecated alias for :func:`save_ess_doc_upload`."""
+    return save_ess_doc_upload(filename, data, user_id=user_id)
+
+
+def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """List files currently under the user's ``ess/docs``."""
+    docs = ess_docs_dir(user_id)
+    if not os.path.isdir(docs):
+        return []
+    out: list[dict[str, object]] = []
+    try:
+        names = sorted(os.listdir(docs))
+    except OSError:
+        return []
+    for name in names:
+        path = os.path.join(docs, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        out.append({"name": name, "path": path, "bytes": size, "mtime": mtime})
+    return out
+
+
+def list_ess_raw_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """Deprecated alias for :func:`list_ess_doc_files`."""
+    return list_ess_doc_files(user_id)
+
+
+def is_ess_foundation_model_parser_enabled(user_id: str | None) -> bool:
+    """True when ESS Foundation Model Parser is on (default True)."""
+    return bool(
+        load_user_settings(user_id).get(
+            "ess_foundation_model_parser_enabled", True
+        )
+    )
+
+
+def set_ess_foundation_model_parser_enabled(
+    enabled: bool, *, user_id: str | None = None
+) -> bool:
+    settings = save_user_settings(
+        user_id, ess_foundation_model_parser_enabled=bool(enabled)
+    )
+    return bool(settings.get("ess_foundation_model_parser_enabled", True))
 
 
 # Extract caches are not needed for Runtime recall_graph_memory.
@@ -782,103 +482,6 @@ def sync_user_graph_to_runtime_storage(user_id: str | None) -> dict[str, int]:
     )
     return {"uploaded": uploaded, "deleted": deleted}
 
-_WIKI_MIRROR_SKIP_DIR_NAMES = frozenset({"cache"})
-
-
-def sync_user_wiki_to_runtime_storage(user_id: str | None) -> dict[str, int]:
-    """Mirror local wiki → S3 agentcore-sessions for AgentCore Runtime ``recall_wiki``.
-
-    Uploads ``{user}/wiki/`` (including ``graphify-out/``) to
-    ``s3://{bucket}/agentcore-sessions/{user}/wiki/``.
-    """
-    segment = sanitize_user_path_segment(user_id)
-    if not segment:
-        return {"uploaded": 0, "deleted": 0}
-
-    wiki_root = get_user_wiki_dir(user_id)
-    graph_json = wiki_graph_json_path(user_id)
-    if not os.path.isfile(graph_json):
-        logger.info(
-            "skip wiki→runtime mirror: no graph.json for %s at %s",
-            segment,
-            graph_json,
-        )
-        return {"uploaded": 0, "deleted": 0}
-
-    try:
-        cfg = load_config()
-    except Exception:
-        cfg = {}
-    bucket = (cfg.get("s3_bucket") if isinstance(cfg, dict) else None) or s3_bucket
-    region = (cfg.get("region") if isinstance(cfg, dict) else None) or bedrock_region
-    if not bucket:
-        logger.warning("skip wiki→runtime mirror: s3_bucket not configured")
-        return {"uploaded": 0, "deleted": 0}
-
-    dest_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/wiki/"
-    local_files: dict[str, str] = {}
-    for dirpath, dirnames, filenames in os.walk(wiki_root):
-        dirnames[:] = [d for d in dirnames if d not in _WIKI_MIRROR_SKIP_DIR_NAMES]
-        for name in filenames:
-            abs_path = os.path.join(dirpath, name)
-            rel = os.path.relpath(abs_path, wiki_root).replace(os.sep, "/")
-            local_files[rel] = abs_path
-
-    if not local_files:
-        return {"uploaded": 0, "deleted": 0}
-
-    uploaded = 0
-    failed = 0
-    deleted = 0
-    with _without_env_proxies():
-        s3 = boto3.client("s3", region_name=region)
-        for rel, abs_path in sorted(local_files.items()):
-            key = f"{dest_prefix}{rel}"
-            try:
-                s3.upload_file(abs_path, bucket, key)
-                uploaded += 1
-            except Exception as e:
-                failed += 1
-                logger.warning("wiki mirror upload failed %s: %s", key, e)
-        if failed:
-            logger.warning(
-                "wiki→runtime mirror incomplete user=%s uploaded=%s failed=%s",
-                segment,
-                uploaded,
-                failed,
-            )
-
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            remote_keys: list[str] = []
-            for page in paginator.paginate(Bucket=bucket, Prefix=dest_prefix):
-                for obj in page.get("Contents") or []:
-                    key = obj.get("Key") or ""
-                    if key and not key.endswith("/"):
-                        remote_keys.append(key)
-            keep = {f"{dest_prefix}{rel}" for rel in local_files}
-            stale = [key for key in remote_keys if key not in keep]
-            for key in stale:
-                try:
-                    s3.delete_object(Bucket=bucket, Key=key)
-                    deleted += 1
-                except Exception as e:
-                    logger.warning("wiki mirror delete failed %s: %s", key, e)
-        except Exception as e:
-            logger.warning("wiki mirror list/delete skipped for %s: %s", segment, e)
-
-    logger.info(
-        "Mirrored wiki → runtime storage user=%s uploaded=%s deleted=%s prefix=s3://%s/%s",
-        segment,
-        uploaded,
-        deleted,
-        bucket,
-        dest_prefix,
-    )
-    return {"uploaded": uploaded, "deleted": deleted}
-
-
-
 GRAPH_PATTERNS = ("pattern1", "pattern2", "pattern3")
 DEFAULT_GRAPH_PATTERN = "pattern1"
 
@@ -886,6 +489,8 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "knowledge_graph_enabled": True,
     "graph_pattern": DEFAULT_GRAPH_PATTERN,
     "foundation_model_parser_enabled": False,
+    # ESS Configure: Foundation Model Parser (default On).
+    "ess_foundation_model_parser_enabled": True,
 }
 
 
@@ -961,6 +566,10 @@ def load_user_settings(user_id: str | None) -> dict[str, object]:
                 settings["foundation_model_parser_enabled"] = bool(
                     raw["foundation_model_parser_enabled"]
                 )
+            if "ess_foundation_model_parser_enabled" in raw:
+                settings["ess_foundation_model_parser_enabled"] = bool(
+                    raw["ess_foundation_model_parser_enabled"]
+                )
             if "skills" in raw:
                 settings["skills"] = _normalize_string_list(raw.get("skills"))
             if "mcp_servers" in raw:
@@ -987,6 +596,8 @@ def save_user_settings(user_id: str | None, **updates: object) -> dict[str, obje
         elif key == "graph_pattern":
             settings[key] = normalize_graph_pattern(value)
         elif key == "foundation_model_parser_enabled":
+            settings[key] = bool(value)
+        elif key == "ess_foundation_model_parser_enabled":
             settings[key] = bool(value)
         elif key == "skills":
             settings[key] = _normalize_string_list(value)
@@ -1598,65 +1209,6 @@ def generate_rag_upload_presigned_put(
         )
         return None
 
-def wiki_raw_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
-    """Build ``agentcore-sessions/{user}/wiki-upload/{file}`` staging key.
-
-    Browser PUTs land here; ``/api/wiki/raw/complete`` copies into local
-    ``{user}/wiki/raw/`` for Sync. Separate from the post-sync ``wiki/`` mirror.
-    """
-    segment = _sanitize_s3_user_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{S3_FILES_SESSION_PREFIX}/{segment}/wiki-upload/{safe_name}"
-
-def generate_wiki_raw_presigned_put(
-    file_name: str,
-    user_id: str | None = None,
-    *,
-    expires_in: int = 900,
-) -> dict | None:
-    """Return a browser-usable presigned PUT URL for Wiki raw uploads."""
-    if not s3_bucket:
-        logger.error("s3_bucket is not configured")
-        return None
-
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    s3_key = wiki_raw_upload_s3_key(safe_name, user_id=user_id)
-    content_type = _session_upload_content_type(safe_name)
-    headers = {"Content-Type": content_type}
-    params: dict = {
-        "Bucket": s3_bucket,
-        "Key": s3_key,
-        "ContentType": content_type,
-    }
-
-    try:
-        with _without_env_proxies():
-            s3_client = _s3_client_for_presign()
-            upload_url = s3_client.generate_presigned_url(
-                ClientMethod="put_object",
-                Params=params,
-                ExpiresIn=max(60, int(expires_in)),
-                HttpMethod="PUT",
-            )
-        logger.info(
-            "wiki raw upload presign key=%s host=%s",
-            s3_key,
-            parse.urlparse(upload_url).netloc,
-        )
-        return {
-            "file_name": safe_name,
-            "s3_key": s3_key,
-            "content_type": content_type,
-            "upload_url": upload_url,
-            "headers": headers,
-            "expires_in": max(60, int(expires_in)),
-        }
-    except Exception:
-        logger.error(
-            "Error generating wiki raw upload presign: %s", traceback.format_exc()
-        )
-        return None
-
 def download_s3_object_to_path(s3_key: str, dest_path: str) -> int:
     """Download an S3 object to ``dest_path`` (streamed to disk). Return size."""
     if not s3_bucket or not s3_key:
@@ -1815,3 +1367,440 @@ def sync_data_source() -> dict | None:
     except Exception:
         logger.error("Error syncing data source: %s", traceback.format_exc())
         return None
+
+# ---------------------------------------------------------------------------
+# ESS docs uploads (browser → S3 presigned PUT → materialize into ess/docs/)
+# ---------------------------------------------------------------------------
+
+ESS_DOCS_S3_PREFIX = "session-uploads"
+MAX_ESS_DOC_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
+def ess_docs_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """Build ``session-uploads/{user}/ess/{file}`` staging key."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    return f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/{safe_name}"
+
+
+def generate_ess_docs_presigned_put(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    expires_in: int = 900,
+) -> dict | None:
+    """Return a browser-usable presigned PUT URL for ESS docs uploads."""
+    if not s3_bucket:
+        logger.error("s3_bucket is not configured")
+        return None
+
+    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(original)
+    except Exception:
+        safe_name = original.replace(" ", "_")
+
+    s3_key = ess_docs_s3_key(safe_name, user_id=user_id)
+    content_type = _session_upload_content_type(safe_name)
+    headers = {"Content-Type": content_type}
+    params: dict = {
+        "Bucket": s3_bucket,
+        "Key": s3_key,
+        "ContentType": content_type,
+    }
+    if content_type == "application/pdf":
+        params["ContentDisposition"] = "inline"
+        headers["Content-Disposition"] = "inline"
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params=params,
+            ExpiresIn=max(60, int(expires_in)),
+            HttpMethod="PUT",
+        )
+        return {
+            "file_name": safe_name,
+            "original_filename": original,
+            "sanitized": original != safe_name,
+            "s3_key": s3_key,
+            "content_type": content_type,
+            "upload_url": upload_url,
+            "headers": headers,
+            "expires_in": max(60, int(expires_in)),
+        }
+    except Exception:
+        logger.error(
+            "Error generating ESS docs presign: %s", traceback.format_exc()
+        )
+        return None
+
+
+def materialize_ess_docs_from_s3(
+    s3_key: str,
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    original_filename: str | None = None,
+) -> dict | None:
+    """Download a staged ESS object into ``{user}/ess/docs/`` and update doc_list."""
+    if not s3_bucket or not s3_key:
+        return None
+
+    original = (
+        os.path.basename(original_filename or file_name or "").strip()
+        or "upload.bin"
+    )
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename, upsert_document
+
+        safe_name = sanitize_ess_filename(file_name or original)
+    except Exception:
+        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        upsert_document = None  # type: ignore[assignment]
+
+    ess = ensure_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    os.makedirs(docs, exist_ok=True)
+    dest_path = os.path.join(docs, safe_name)
+    overwritten = os.path.isfile(dest_path)
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.download_file(s3_bucket, s3_key, dest_path)
+        size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+        if size <= 0:
+            logger.error("ESS materialize produced empty file: %s", dest_path)
+            return None
+
+        segment = sanitize_user_path_segment(user_id) or "default"
+        if upsert_document is not None:
+            try:
+                upsert_document(
+                    ess,
+                    filename=safe_name,
+                    source_path=os.path.abspath(dest_path),
+                    bytes_size=size,
+                    status="uploaded",
+                    user_id=segment,
+                    extra={
+                        "original_filename": original,
+                        "sanitized": original != safe_name,
+                        "s3_key": s3_key,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to update ess doc_list after materialize")
+
+        logger.info(
+            "ess docs materialized user=%s s3_key=%s path=%s bytes=%s",
+            segment,
+            s3_key,
+            dest_path,
+            size,
+        )
+        return {
+            "ess_dir": ess,
+            "docs_dir": docs,
+            "raw_dir": docs,
+            "saved": {
+                "name": safe_name,
+                "original_filename": original,
+                "sanitized": original != safe_name,
+                "path": dest_path,
+                "bytes": size,
+                "overwritten": overwritten,
+            },
+            "count": 1,
+            "s3_key": s3_key,
+            "doc_list": ess_doc_list_path(user_id),
+            "content_type": _session_upload_content_type(safe_name),
+            "content_length": size,
+        }
+    except Exception:
+        logger.error(
+            "Error materializing ESS docs key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# ESS document list — CloudFront URLs (PDF) + artifacts MD publish
+# ---------------------------------------------------------------------------
+
+def ess_pdf_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """S3 key for an ESS PDF uploaded via Configure (session-uploads staging)."""
+    return ess_docs_s3_key(file_name, user_id=user_id)
+
+
+def ess_pdf_public_url(file_name: str, user_id: str | None = None) -> str | None:
+    """CloudFront URL for ``session-uploads/{user}/ess/{pdf}`` when sharing_url is set."""
+    if not sharing_url:
+        return None
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    segment = sanitize_user_path_segment(user_id) or "default"
+    relative = (
+        f"{ESS_DOCS_S3_PREFIX}/{parse.quote(segment)}/ess/{parse.quote(safe_name)}"
+    )
+    return f"{sharing_url.rstrip('/')}/{relative}"
+
+
+def ess_md_artifacts_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """``artifacts/{projectName}/{user}/md/{stem}.md`` for CloudFront viewing."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    project = (projectName or "default").strip().strip("/") or "default"
+    return f"artifacts/{project}/{segment}/md/{safe_name}"
+
+
+def ess_md_artifacts_public_url(
+    file_name: str, user_id: str | None = None
+) -> str | None:
+    if not sharing_url:
+        return None
+    key = ess_md_artifacts_s3_key(file_name, user_id=user_id)
+    # Quote each path segment; keep slashes.
+    parts = [parse.quote(p) for p in key.split("/")]
+    return f"{sharing_url.rstrip('/')}/{'/'.join(parts)}"
+
+
+def ess_md_local_artifacts_path(
+    file_name: str, user_id: str | None = None
+) -> str:
+    """Local mirror: ``{user}/artifacts/md/{stem}.md``."""
+    artifacts = ensure_user_artifacts_dir(user_id)
+    md_dir = os.path.join(artifacts, "md")
+    os.makedirs(md_dir, exist_ok=True)
+    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    return os.path.join(md_dir, safe_name)
+
+
+def publish_ess_markdown_to_artifacts(
+    md_path: str,
+    user_id: str | None = None,
+    *,
+    file_name: str | None = None,
+) -> dict | None:
+    """Copy markdown next to artifacts and upload to S3 for CloudFront.
+
+    Target key: ``artifacts/{projectName}/{user_id}/md/{name}.md``.
+    """
+    from pathlib import Path
+
+    src = Path(md_path)
+    if not src.is_file():
+        logger.warning("ESS md publish skipped; missing file: %s", src)
+        return None
+
+    name = os.path.basename(file_name or src.name)
+    if not name.lower().endswith(".md"):
+        name = f"{os.path.splitext(name)[0]}.md"
+
+    local_dest = ess_md_local_artifacts_path(name, user_id=user_id)
+    try:
+        src_stat = src.stat()
+        if (
+            os.path.isfile(local_dest)
+            and os.path.getsize(local_dest) == src_stat.st_size
+            and os.path.getmtime(local_dest) >= src_stat.st_mtime
+            and s3_bucket
+        ):
+            # Local mirror already fresh — still ensure S3 object exists.
+            s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+            public_url = ess_md_artifacts_public_url(name, user_id=user_id)
+            head = _head_s3_object_quiet(s3_key)
+            if head and int(head.get("content_length") or 0) == src_stat.st_size:
+                return {
+                    "file_name": name,
+                    "local_path": local_dest,
+                    "s3_key": s3_key,
+                    "url": public_url,
+                    "uploaded": True,
+                    "skipped": True,
+                    "bytes": src_stat.st_size,
+                }
+        if os.path.abspath(str(src)) != os.path.abspath(local_dest):
+            import shutil
+
+            shutil.copy2(src, local_dest)
+    except Exception:
+        logger.exception("Failed to copy ESS md to local artifacts: %s", src)
+        local_dest = str(src.resolve())
+
+    s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+    public_url = ess_md_artifacts_public_url(name, user_id=user_id)
+    result = {
+        "file_name": name,
+        "local_path": local_dest,
+        "s3_key": s3_key,
+        "url": public_url,
+        "uploaded": False,
+    }
+
+    if not s3_bucket:
+        logger.warning("s3_bucket not configured; ESS md kept local only")
+        return result
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        content_type = get_contents_type(name)
+        if content_type == "no info":
+            content_type = "text/markdown; charset=utf-8"
+        with open(local_dest, "rb") as f:
+            body = f.read()
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            Body=body,
+            ContentType=content_type,
+            CacheControl="no-cache, max-age=0, must-revalidate",
+        )
+        result["uploaded"] = True
+        result["bytes"] = len(body)
+        logger.info(
+            "ESS md published user=%s s3_key=%s bytes=%s url=%s",
+            sanitize_user_path_segment(user_id) or "default",
+            s3_key,
+            len(body),
+            public_url,
+        )
+        return result
+    except Exception:
+        logger.error(
+            "Error publishing ESS md to artifacts: %s", traceback.format_exc()
+        )
+        return result
+
+
+def head_ess_pdf_on_s3(file_name: str, user_id: str | None = None) -> bool:
+    """True when the ESS PDF object exists under session-uploads (CloudFront-ready)."""
+    key = ess_pdf_s3_key(file_name, user_id=user_id)
+    if not s3_bucket or not key:
+        return False
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.head_object(Bucket=s3_bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def _head_s3_object_quiet(s3_key: str) -> dict | None:
+    if not s3_bucket or not s3_key:
+        return None
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
+        return {
+            "content_length": int(response.get("ContentLength") or 0),
+            "content_type": response.get("ContentType"),
+        }
+    except Exception:
+        return None
+
+
+def enrich_ess_documents_for_ui(
+    documents: list[dict],
+    user_id: str | None = None,
+    *,
+    publish_md: bool = True,
+) -> list[dict]:
+    """Attach pdf/md view URLs for Document List UI.
+
+    PDF: prefer CloudFront ``session-uploads/{user}/ess/{pdf}``; else API fallback.
+    MD: copy+upload to ``artifacts/{project}/{user}/md/`` then expose CloudFront + viewer URL.
+    """
+    enriched: list[dict] = []
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        item = dict(doc)
+        filename = str(item.get("filename") or "").strip()
+        md_file = str(item.get("md_file") or item.get("md_path") or "").strip()
+        md_name = os.path.basename(md_file) if md_file else ""
+        if not md_name and filename:
+            stem = os.path.splitext(filename)[0]
+            md_name = f"{stem}.md"
+
+        pdf_name = filename if filename.lower().endswith(".pdf") else ""
+        if not pdf_name and filename:
+            # source may be pdf even if filename field uses another form
+            src = str(item.get("source_path") or "")
+            if src.lower().endswith(".pdf"):
+                pdf_name = os.path.basename(src)
+
+        local_md = str(item.get("md_path") or "").strip()
+        if local_md and not os.path.isfile(local_md) and md_name:
+            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            if os.path.isfile(candidate):
+                local_md = candidate
+        elif not local_md and md_name:
+            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            if os.path.isfile(candidate):
+                local_md = candidate
+
+        local_pdf = ""
+        if pdf_name:
+            candidate = os.path.join(ess_docs_dir(user_id), pdf_name)
+            if os.path.isfile(candidate):
+                local_pdf = candidate
+            else:
+                src = str(item.get("source_path") or "")
+                if src and os.path.isfile(src) and src.lower().endswith(".pdf"):
+                    local_pdf = src
+
+        pdf_cf = ess_pdf_public_url(pdf_name, user_id=user_id) if pdf_name else None
+        pdf_on_s3 = bool(pdf_name and head_ess_pdf_on_s3(pdf_name, user_id=user_id))
+        item["pdf_available"] = bool(local_pdf) or pdf_on_s3
+        item["pdf_url"] = pdf_cf if pdf_on_s3 else None
+        item["pdf_api_url"] = (
+            f"/api/ess/documents/{parse.quote(pdf_name)}/pdf" if pdf_name else None
+        )
+
+        md_url = None
+        md_published = False
+        if local_md and os.path.isfile(local_md) and publish_md:
+            published = publish_ess_markdown_to_artifacts(
+                local_md, user_id=user_id, file_name=md_name or None
+            )
+            if published:
+                md_url = published.get("url")
+                md_published = bool(published.get("uploaded"))
+                item["md_s3_key"] = published.get("s3_key")
+                item["md_local_artifacts"] = published.get("local_path")
+        elif md_name:
+            md_url = ess_md_artifacts_public_url(md_name, user_id=user_id)
+
+        item["md_available"] = bool(local_md and os.path.isfile(local_md))
+        item["md_url"] = md_url
+        item["md_published"] = md_published
+        if local_md and os.path.isfile(local_md):
+            try:
+                item["md_bytes"] = os.path.getsize(local_md)
+            except OSError:
+                item["md_bytes"] = None
+        else:
+            item["md_bytes"] = None
+        item["md_viewer_url"] = (
+            f"/api/ess/documents/{parse.quote(md_name)}/markdown"
+            if md_name
+            else None
+        )
+        item["display_name"] = (
+            str(item.get("original_filename") or "").strip() or filename or md_name
+        )
+        enriched.append(item)
+    return enriched

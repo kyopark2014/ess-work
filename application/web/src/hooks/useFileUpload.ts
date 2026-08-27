@@ -214,29 +214,6 @@ export function useFileUpload({ disabled = false }: UseFileUploadOptions = {}) {
     [disabled],
   );
 
-  const uploadWikiFiles = useCallback(
-    async (files: File[], onComplete?: (message: string) => void) => {
-      if (files.length === 0 || disabled || uploadingRef.current) return;
-      setUploading(true);
-      setUploadError(null);
-      try {
-        const result = await fileUploadService.uploadToWiki(files);
-        onComplete?.(result.message);
-      } catch (err) {
-        console.error("Wiki document upload failed", err);
-        const detail = err instanceof Error ? err.message : "";
-        setUploadError(
-          detail
-            ? detail.replace(/^Wiki upload failed:\s*/i, "")
-            : "Wiki 업로드에 실패했습니다. 다시 시도해 주세요.",
-        );
-      } finally {
-        setUploading(false);
-      }
-    },
-    [disabled],
-  );
-
   const removeAttachment = useCallback((url: string) => {
     setAttachments((prev) => {
       const next: AttachedImage[] = [];
@@ -256,6 +233,28 @@ export function useFileUpload({ disabled = false }: UseFileUploadOptions = {}) {
   const removeLoadedFile = useCallback((path: string) => {
     setLoadedFiles((prev) => prev.filter((item) => item.path !== path));
   }, []);
+
+  /** Attach a workspace path or CloudFront URL (e.g. ESS Document List markdown). */
+  const attachExistingFile = useCallback(
+    (file: LoadedFile) => {
+      if (disabled) return;
+      const path = (file.path || "").trim();
+      const name = (file.name || "").trim();
+      if (!path || !name) return;
+      setLoadedFiles((prev) => {
+        const next = prev.filter((item) => item.path !== path);
+        return [
+          ...next,
+          {
+            path,
+            name,
+            size: Number.isFinite(file.size) && file.size > 0 ? file.size : 0,
+          },
+        ];
+      });
+    },
+    [disabled],
+  );
 
   const clearAttachments = useCallback(() => {
     setAttachments((prev) => {
@@ -325,7 +324,7 @@ export function useFileUpload({ disabled = false }: UseFileUploadOptions = {}) {
     uploadImageFiles,
     loadWorkspaceFiles,
     uploadRagFiles,
-    uploadWikiFiles,
+    attachExistingFile,
     removeAttachment,
     removeLoadedFile,
     clearAttachments,

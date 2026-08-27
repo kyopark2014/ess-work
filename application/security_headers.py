@@ -112,10 +112,10 @@ def _viewer_is_https(scope: Scope) -> bool:
 
 
 def _is_graph_html(scope: Scope) -> bool:
-    """Exact Knowledge/Wiki graph HTML (not /status|/query|/rebuild)."""
+    """Exact Knowledge graph HTML (not /status|/query|/rebuild)."""
     path = scope.get("path") or "/"
     path = path.rstrip("/") or "/"
-    return path in {"/api/graph", "/api/wiki/graph"}
+    return path in {"/api/graph"}
 
 
 def _header_names(headers: list[tuple[bytes, bytes]]) -> set[bytes]:
