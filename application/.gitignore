@@ -1,0 +1,11 @@
+__pycache__
+__init__.py
+
+# configuration
+config.json
+
+# local task database
+data/
+.session_storage/
+graph/corpus/
+graph/out/
