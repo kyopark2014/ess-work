@@ -216,6 +216,8 @@ export const api = {
     request<EssDocListResult>(
       `/api/ess/project-list${publishMd ? "" : "?publish_md=0"}`,
     ),
+  getEssTestCaseList: () =>
+    request<EssDocListResult>("/api/ess/test-case-list"),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",

@@ -22,8 +22,13 @@ function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function isHttpImageRef(ref: string): boolean {
-  return /^https?:\/\//i.test(ref) || ref.startsWith("blob:");
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+/** True for image previews / image URLs — not for document HTTPS links (.md, .json, …). */
+function isImageAttachmentRef(ref: string): boolean {
+  if (ref.startsWith("blob:")) return true;
+  const path = ref.split("?")[0].split("#")[0];
+  return IMAGE_EXT_RE.test(path);
 }
 
 function fileNameFromRef(ref: string): string {
@@ -43,7 +48,7 @@ function splitAttachmentRefs(refs: string[]): {
   const imageUrls: string[] = [];
   const filePaths: string[] = [];
   for (const ref of refs) {
-    if (isHttpImageRef(ref)) imageUrls.push(ref);
+    if (isImageAttachmentRef(ref)) imageUrls.push(ref);
     else filePaths.push(ref);
   }
   return { imageUrls, filePaths };

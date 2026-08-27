@@ -280,13 +280,19 @@ def _upload_file_to_project_s3(filepath: str, full_path: str | None = None) -> s
     key = _s3_key_for_upload(filepath, resolved)
     content_type = utils.get_contents_type(key)
     s3 = boto3.client("s3", region_name=config.get("region", "us-west-2"))
+    # CloudFront CachingOptimized: without Cache-Control, same-key updates
+    # can be served from edge for up to ~24h. Force revalidation.
     with open(resolved, "rb") as f:
-        s3.put_object(
-            Bucket=s3_bucket,
-            Key=key,
-            Body=f.read(),
-            ContentType=content_type,
-        )
+        body = f.read()
+    put_kwargs = {
+        "Bucket": s3_bucket,
+        "Key": key,
+        "Body": body,
+        "CacheControl": "no-cache, max-age=0, must-revalidate",
+    }
+    if content_type and content_type != "no info":
+        put_kwargs["ContentType"] = content_type
+    s3.put_object(**put_kwargs)
     logger.info("uploaded artifact to s3://%s/%s", s3_bucket, key)
     return key
 

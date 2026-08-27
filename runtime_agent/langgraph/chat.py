@@ -731,7 +731,8 @@ def upload_to_s3(file_bytes, file_name):
             Key=s3_key, 
             ContentType=content_type,
             Metadata = user_meta,
-            Body=file_bytes            
+            Body=file_bytes,
+            CacheControl="no-cache, max-age=0, must-revalidate",
         )
         logger.info(f"upload response: {response}")
 

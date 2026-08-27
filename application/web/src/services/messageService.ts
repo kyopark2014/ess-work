@@ -19,13 +19,21 @@ export function stabilizeMessageKeys(prev: Message[], next: Message[]): Message[
   });
 }
 
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+function isImageAttachmentRef(ref: string): boolean {
+  if (ref.startsWith("blob:")) return true;
+  const path = ref.split("?")[0].split("#")[0];
+  return IMAGE_EXT_RE.test(path);
+}
+
 export function buildDisplayPrompt(prompt: string, files: string[]): string {
   if (prompt.trim()) return prompt.trim();
   if (files.length === 0) return "";
-  const onlyWorkspace = files.every((f) => f.startsWith("/mnt/workspace/"));
-  return onlyWorkspace
-    ? "첨부한 파일을 분석해주세요."
-    : "첨부한 이미지를 분석해주세요.";
+  const onlyImages = files.every((f) => isImageAttachmentRef(f));
+  return onlyImages
+    ? "첨부한 이미지를 분석해주세요."
+    : "첨부한 파일을 분석해주세요.";
 }
 
 export function buildOptimisticUserMessage(
