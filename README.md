@@ -1,4 +1,4 @@
-# LangGraph Agent의 AgentCore 배포 및 활용
+# ESS Agent의 AgentCore 배포 및 활용
 
 여기에서는 Web UI(FastAPI + React)를 Amazon ECS에 배포하고, Agent는 AgentCore Runtime을 활용해 배포합니다. 
 
