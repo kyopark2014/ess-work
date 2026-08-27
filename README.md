@@ -105,7 +105,7 @@ UI에서 MCP는 `application/mcp.list` 기준으로 `knowledge base`, `aws docum
 
 ### 네트워크 설정
 
-`langgraph-runtime`은 **ECS(Web UI)** 와 **AgentCore Runtime(LangGraph 서버)** 가 모두 **private subnet** 에 배포됩니다. 이 환경에서는 인터넷으로 직접 나가지 않으므로, AWS API 호출은 **VPC Interface/Gateway Endpoint** 로, 외부 MCP·npm·cross-region 트래픽은 **NAT Gateway** 로 egress 를 열어야 합니다.
+`ess-work`은 **ECS(Web UI)** 와 **AgentCore Runtime(LangGraph 서버)** 가 모두 **private subnet** 에 배포됩니다. 이 환경에서는 인터넷으로 직접 나가지 않으므로, AWS API 호출은 **VPC Interface/Gateway Endpoint** 로, 외부 MCP·npm·cross-region 트래픽은 **NAT Gateway** 로 egress 를 열어야 합니다.
 
 [installer.py](./installer.py) 가 신규 VPC 생성뿐 아니라 **기존 VPC 재사용 시**에도 아래 리소스를 자동으로 맞춥니다.
 
@@ -198,7 +198,7 @@ Websearch gateway 는 installer 가 `AGENTCORE_GATEWAY_REGION = "us-east-1"` 에
 
 로그 그룹:
 
-- ECS UI: `/ecs/app-for-langgraph-runtime`  
+- ECS UI: `/ecs/app-for-ess-work`  
 - Agent Runtime: `/aws/bedrock-agentcore/runtimes/runtime_langgraph-*-DEFAULT`
 
 #### 비용 참고
@@ -446,7 +446,7 @@ Web UI는 **FastAPI 백엔드 + React SPA**로 구성됩니다. Streamlit을 대
 | 채팅 | `ChatThread`, `MessageBubble`, `ChatInput` | 대화 스레드, Markdown·도구 이벤트, 입력 |
 | 스트리밍 | `useChatStream` | SSE 이벤트(`token`, `tool`, `tool_result`, `done`) 처리 |
 
-사이드바 상단 **Brand**와 브라우저 탭 제목은 `config.json`의 `projectName`을 사용합니다. 하이픈(`-`)은 공백으로 바꾸고 첫 글자만 대문자로 표시합니다. (예: `langgraph-runtime` → `Langgraph runtime`)
+사이드바 상단 **Brand**와 브라우저 탭 제목은 `config.json`의 `projectName`을 사용합니다. 하이픈(`-`)은 공백으로 바꾸고 첫 글자만 대문자로 표시합니다. (예: `ess-work` → `Langgraph runtime`)
 
 ### 프론트엔드 디렉터리 (`application/web/`)
 
@@ -571,7 +571,7 @@ uvicorn application.server:app --host 0.0.0.0 --port 8501
 |-----------|------------|
 | 헬스체크 | `GET http://localhost:8501/api/health` |
 | UI 미빌드 시 | `Frontend not built` — `npm run build` 후 서버 재시작 |
-| 태스크·메시지 DB | `application/data/tasks.db` (로컬 working). ECS 배포 시 S3 Files `/mnt/app-data/application-database/langgraph-runtime/tasks.db`에 영속화 |
+| 태스크·메시지 DB | `application/data/tasks.db` (로컬 working). ECS 배포 시 S3 Files `/mnt/app-data/application-database/ess-work/tasks.db`에 영속화 |
 
 #### 3) (선택) 프론트엔드만 핫 리로드
 
@@ -647,7 +647,7 @@ Runtime은 `agentcore-sessions/` → `/mnt/workspace`를 쓰고, ECS는 **별도
 | 변수 | 값 |
 |------|-----|
 | `TASK_DB_MOUNT` | `/mnt/app-data` |
-| `TASK_DB_PROJECT` | `langgraph-runtime` (project name) |
+| `TASK_DB_PROJECT` | `ess-work` (project name) |
 
 로컬 개발(`uvicorn`)에서는 `/mnt/app-data`가 없으므로 **기존처럼 `application/data/tasks.db`만** 사용합니다.
 
@@ -1218,7 +1218,7 @@ S3 측 경로: `s3://{bucket}/agentcore-sessions/` (예: `langgraph_checkpoints.
 
 ```bash
 # 전체 인프라 + S3 Files + Runtime
-cd langgraph-runtime
+cd ess-work
 python3 installer.py
 
 # Runtime만 S3 Files 모드로 갱신 (config에 S3 Files 키 필요)
@@ -1839,8 +1839,8 @@ docker info
 6. 아래와 같이 git source를 가져옵니다.
 
 ```bash
-git clone https://github.com/kyopark2014/langgraph-runtime
-cd langgraph-runtime
+git clone https://github.com/kyopark2014/ess-work
+cd ess-work
 ```
 
 7. Python 3.12 가상환경을 만들고 boto3를 설치한 뒤, [installer.py](./installer.py)로 배포합니다.
@@ -1848,7 +1848,7 @@ cd langgraph-runtime
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install boto3
+pip install boto3 bedrock-agentcore
 
 # boto3/botocore가 1.43.32 이상인지 확인
 python -c "import boto3, botocore; print(boto3.__version__, botocore.__version__)"
