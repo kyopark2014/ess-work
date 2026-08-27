@@ -36,7 +36,7 @@ type DrawerKind =
   | null;
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
-const ESS_OPTIONS = ["Sync", "Regulations", "Configure"] as const;
+const ESS_OPTIONS = ["Sync", "Regulations", "Projects", "Configure"] as const;
 const KNOWLEDGE_ACTIONS = ["Sync", "Graph"] as const;
 
 function themeToLabel(theme: Theme): string {
@@ -95,6 +95,9 @@ export function Sidebar({
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [essConfigureOpen, setEssConfigureOpen] = useState(false);
   const [essDocListOpen, setEssDocListOpen] = useState(false);
+  const [essDocListKind, setEssDocListKind] = useState<"regulation" | "project">(
+    "regulation",
+  );
   const [essSyncBusy, setEssSyncBusy] = useState(false);
   const [essSyncMessage, setEssSyncMessage] = useState<string | null>(null);
   const [essSyncProgress, setEssSyncProgress] = useState<{
@@ -150,6 +153,13 @@ export function Sidebar({
       return;
     }
     if (choice === "Regulations") {
+      setEssDocListKind("regulation");
+      setEssDocListOpen(true);
+      handleSettingApplied();
+      return;
+    }
+    if (choice === "Projects") {
+      setEssDocListKind("project");
       setEssDocListOpen(true);
       handleSettingApplied();
       return;
@@ -668,7 +678,10 @@ export function Sidebar({
       )}
 
       {essDocListOpen && (
-        <EssDocumentListModal onClose={() => setEssDocListOpen(false)} />
+        <EssDocumentListModal
+          kind={essDocListKind}
+          onClose={() => setEssDocListOpen(false)}
+        />
       )}
 
       {essSyncPopupOpen && (
