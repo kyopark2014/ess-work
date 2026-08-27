@@ -150,6 +150,15 @@ export interface EssDocument {
   md_url?: string | null;
   md_viewer_url?: string | null;
   md_published?: boolean;
+  title?: string;
+  standard?: string;
+  rows?: number;
+  json_path?: string;
+  xlsx_available?: boolean;
+  xlsx_api_url?: string | null;
+  json_available?: boolean;
+  json_viewer_url?: string | null;
+  kind?: string;
 }
 
 export interface EssDocListResult {

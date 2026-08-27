@@ -37,10 +37,10 @@ type DrawerKind =
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
 const ESS_OPTIONS = [
-  "Sync",
   "Regulations",
   "Test Cases",
   "Projects",
+  "Sync",
   "Configure",
 ] as const;
 const KNOWLEDGE_ACTIONS = ["Sync", "Graph"] as const;
