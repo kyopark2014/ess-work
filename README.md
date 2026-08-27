@@ -1850,6 +1850,16 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install boto3 bedrock-agentcore
 
+# Node 설치
+cd application/web
+sudo dnf install -y nodejs22
+node -v
+npm -v
+
+# package-lock.json 생성
+npm install
+cd ../..
+
 # boto3/botocore가 1.43.32 이상인지 확인
 python -c "import boto3, botocore; print(boto3.__version__, botocore.__version__)"
 
