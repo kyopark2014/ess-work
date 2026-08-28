@@ -447,6 +447,38 @@ def _parse_aws_read_documentation_result(tool_content):
     return content, urls, tool_references
 
 
+def _urls_from_execute_code_output(output: str) -> list:
+    """Extract published artifact URLs from execute_code stdout JSON (e.g. testcase xlsx)."""
+    if not isinstance(output, str) or not output.strip():
+        return []
+    urls: list[str] = []
+    text = output.strip()
+    if text.startswith("STDOUT:"):
+        text = text[len("STDOUT:") :].strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, dict):
+        return []
+    url = data.get("url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        urls.append(url)
+    return urls
+
+
+def _is_broken_session_storage_url(url: str) -> bool:
+    """CloudFront URLs built from ``.session_storage/...`` paths always 403."""
+    return isinstance(url, str) and ".session_storage/" in url
+
+
 def _parse_generic_tool_result(tool_content):
     tool_references = []
     urls = []
@@ -465,9 +497,17 @@ def _parse_generic_tool_result(tool_content):
             path = json_data["path"]
             if isinstance(path, list):
                 for url in path:
+                    if _is_broken_session_storage_url(url):
+                        continue
                     urls.append(url)
             else:
-                urls.append(path)
+                if not _is_broken_session_storage_url(path):
+                    urls.append(path)
+
+        if isinstance(json_data, dict) and isinstance(json_data.get("output"), str):
+            for u in _urls_from_execute_code_output(json_data["output"]):
+                if u and u not in urls:
+                    urls.append(u)
 
         # RAG retrieve returns MCP blocks: [{"type":"text","text":"[{contents,reference}...]"}]
         extracted = _extract_rag_references_from_payload(json_data)

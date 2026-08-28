@@ -1772,6 +1772,38 @@ def _parse_execute_code_artifact_paths(tool_content: str) -> list:
     return out
 
 
+def _urls_from_execute_code_output(output: str) -> list:
+    """Extract published artifact URLs from execute_code stdout JSON (e.g. testcase xlsx)."""
+    if not isinstance(output, str) or not output.strip():
+        return []
+    urls: list[str] = []
+    text = output.strip()
+    if text.startswith("STDOUT:"):
+        text = text[len("STDOUT:") :].strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, dict):
+        return []
+    url = data.get("url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        urls.append(url)
+    return urls
+
+
+def _is_broken_session_storage_url(url: str) -> bool:
+    """CloudFront URLs built from ``.session_storage/...`` paths always 403."""
+    return isinstance(url, str) and ".session_storage/" in url
+
+
 def _format_artifact_links_markdown(artifact_urls: list) -> str:
     """Append artifact list for the reply. Local files: relative path only (no file:// links)."""
     from pathlib import Path
@@ -2036,9 +2068,12 @@ def get_tool_info(tool_name, tool_content):
                 path = json_data["path"]
                 if isinstance(path, list):
                     for url in path:
+                        if _is_broken_session_storage_url(url):
+                            continue
                         urls.append(url)
                 else:
-                    urls.append(path)
+                    if not _is_broken_session_storage_url(path):
+                        urls.append(path)
             elif isinstance(json_data, list):  # Parse JSON from text field when json_data is a list
                 for item in json_data:
                     if isinstance(item, dict) and "text" in item:
@@ -2094,6 +2129,9 @@ def get_tool_info(tool_name, tool_content):
                 data = json.loads(tool_content)
                 if isinstance(data, dict) and isinstance(data.get("output"), str):
                     extra.extend(_parse_execute_code_artifact_paths(data["output"]))
+                    for u in _urls_from_execute_code_output(data["output"]):
+                        if u and u not in urls:
+                            urls.append(u)
             except json.JSONDecodeError:
                 extra.extend(_parse_execute_code_artifact_paths(tool_content))
         for u in extra:
