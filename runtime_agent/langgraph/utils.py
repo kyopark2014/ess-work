@@ -28,6 +28,9 @@ def _default_session_storage_dir() -> str:
 SESSION_STORAGE_DIR = os.environ.get("SESSION_STORAGE_DIR") or _default_session_storage_dir()
 SKILLS_DIR = os.path.join(workingDir, "skills")
 
+S3_FILES_SESSION_PREFIX = "agentcore-sessions"
+S3_FILES_APP_DATA_PREFIX = "app-data/"
+
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:
     """Return a safe single path segment for per-user workspace folders, or None."""
@@ -336,6 +339,55 @@ def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
     return os.path.join(docs_dir, safe), safe, original
 
 
+def _mirror_testcases_to_app_data(user_id: str | None) -> dict[str, int]:
+    """Upload test cases from Runtime workspace into S3 app-data/ after save.
+
+    Reads local ``/mnt/workspace/{user}/ess/test_cases/`` (just written) and
+    uploads to ``app-data/{user}/ess/…`` so the ECS Web UI can see them without
+    waiting for agentcore-sessions → app-data S3 copy on list refresh.
+    """
+    segment = sanitize_user_path_segment(user_id)
+    if not segment or not os.path.isdir("/mnt/workspace"):
+        return {"copied": 0}
+
+    cfg = load_config() or {}
+    bucket = (cfg.get("s3_bucket") or "").strip()
+    region = (cfg.get("region") or "us-west-2").strip()
+    if not bucket:
+        logger.warning("skip ess test_cases mirror: s3_bucket not configured")
+        return {"copied": 0}
+
+    tc_dir = os.path.join(get_user_ess_dir(user_id), "test_cases")
+    list_path = ess_test_cases_list_path(user_id)
+    dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
+    list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
+
+    copied = 0
+    try:
+        s3 = boto3.client("s3", region_name=region)
+        if os.path.isdir(tc_dir):
+            for name in sorted(os.listdir(tc_dir)):
+                path = os.path.join(tc_dir, name)
+                if not os.path.isfile(path):
+                    continue
+                s3.upload_file(path, bucket, f"{dst_cases_prefix}{name}")
+                copied += 1
+        if os.path.isfile(list_path):
+            s3.upload_file(list_path, bucket, list_dst_key)
+            copied += 1
+    except Exception:
+        logger.exception("ess test_cases mirror failed user=%s", segment)
+        return {"copied": copied}
+
+    if copied:
+        logger.info(
+            "Mirrored ess test_cases workspace→app-data user=%s copied=%s",
+            segment,
+            copied,
+        )
+    return {"copied": copied}
+
+
 def save_ess_testcase(
     xlsx_path: str,
     *,
@@ -443,6 +495,11 @@ def save_ess_testcase(
         len(data),
         ", overwrite" if overwritten else "",
     )
+    mirror = {"copied": 0}
+    try:
+        mirror = _mirror_testcases_to_app_data(user_id)
+    except Exception:
+        logger.exception("ess test_cases post-save mirror failed user=%s", segment)
     return {
         "ess_dir": ess,
         "test_cases_dir": tc_dir,
@@ -461,6 +518,7 @@ def save_ess_testcase(
         },
         "count": 1,
         "test_cases_list": ess_test_cases_list_path(user_id),
+        "mirror": mirror,
     }
 
 

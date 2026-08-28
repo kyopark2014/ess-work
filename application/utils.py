@@ -35,6 +35,8 @@ SESSION_STORAGE_DIR = os.environ.get("SESSION_STORAGE_DIR") or _default_session_
 
 # S3 Files FS prefix for Runtime workspace → s3://{bucket}/agentcore-sessions/
 S3_FILES_SESSION_PREFIX = "agentcore-sessions"
+# ECS app-data mount → s3://{bucket}/app-data/
+S3_FILES_APP_DATA_PREFIX = "app-data/"
 
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:
@@ -649,6 +651,101 @@ def save_ess_testcase(
         "count": 1,
         "test_cases_list": ess_test_cases_list_path(user_id),
     }
+
+
+def sync_user_ess_testcases_from_runtime_storage(
+    user_id: str | None,
+) -> dict[str, int]:
+    """Mirror AgentCore-saved test cases (``agentcore-sessions/``) into ECS ``app-data/``.
+
+    Runtime ``save_testcase.py`` writes under ``/mnt/workspace/{user}/ess/test_cases``,
+    which syncs to S3 ``agentcore-sessions/{user}/ess/…``. The Web UI reads
+    ``/mnt/app-data/{user}/ess/…`` (``app-data/`` prefix). Without this mirror,
+    saved test cases exist on Runtime storage but do not appear in Test Cases UI.
+    """
+    segment = sanitize_user_path_segment(user_id)
+    if not segment:
+        return {"copied": 0}
+
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    bucket = (cfg.get("s3_bucket") if isinstance(cfg, dict) else None) or s3_bucket
+    region = (cfg.get("region") if isinstance(cfg, dict) else None) or bedrock_region
+    if not bucket:
+        logger.warning("skip ess test_cases mirror: s3_bucket not configured")
+        return {"copied": 0}
+
+    src_cases_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases/"
+    dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
+    list_src_key = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases_list.json"
+    list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
+
+    copied = 0
+    with _without_env_proxies():
+        s3 = boto3.client("s3", region_name=region)
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=src_cases_prefix):
+            for obj in page.get("Contents") or []:
+                src_key = obj.get("Key") or ""
+                if not src_key or src_key.endswith("/"):
+                    continue
+                rel = src_key[len(src_cases_prefix) :]
+                if not rel:
+                    continue
+                dst_key = f"{dst_cases_prefix}{rel}"
+                src_modified = obj.get("LastModified")
+                try:
+                    head = s3.head_object(Bucket=bucket, Key=dst_key)
+                    dst_modified = head.get("LastModified")
+                    if (
+                        dst_modified
+                        and src_modified
+                        and dst_modified >= src_modified
+                    ):
+                        continue
+                except s3.exceptions.ClientError:
+                    pass
+                s3.copy_object(
+                    Bucket=bucket,
+                    Key=dst_key,
+                    CopySource={"Bucket": bucket, "Key": src_key},
+                )
+                copied += 1
+
+        try:
+            src_head = s3.head_object(Bucket=bucket, Key=list_src_key)
+            src_list_modified = src_head.get("LastModified")
+            copy_list = True
+            try:
+                dst_head = s3.head_object(Bucket=bucket, Key=list_dst_key)
+                dst_list_modified = dst_head.get("LastModified")
+                if (
+                    dst_list_modified
+                    and src_list_modified
+                    and dst_list_modified >= src_list_modified
+                ):
+                    copy_list = False
+            except s3.exceptions.ClientError:
+                pass
+            if copy_list:
+                s3.copy_object(
+                    Bucket=bucket,
+                    Key=list_dst_key,
+                    CopySource={"Bucket": bucket, "Key": list_src_key},
+                )
+                copied += 1
+        except s3.exceptions.ClientError:
+            pass
+
+    if copied:
+        logger.info(
+            "Mirrored ess test_cases sessions→app-data user=%s copied=%s",
+            segment,
+            copied,
+        )
+    return {"copied": copied}
 
 
 def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:

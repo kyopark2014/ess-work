@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -14,6 +15,8 @@ from pydantic import BaseModel, Field
 from application.api.routes_auth import require_user_id
 from application.ess_jobs import ensure_ess_sync, get_ess_job_status
 from application import utils
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ess", tags=["ess"])
 
@@ -400,6 +403,13 @@ def get_ess_test_case_list(request: Request) -> dict:
     """Return ESS test-case documents with xlsx/json view URLs (``test_cases_list.json``)."""
     user_id = require_user_id(request)
     utils.ensure_user_ess_dir(user_id)
+    try:
+        utils.sync_user_ess_testcases_from_runtime_storage(user_id)
+    except Exception:
+        logger.exception(
+            "ess test_cases mirror failed user=%s; serving app-data list",
+            user_id,
+        )
     payload = _load_test_case_list_payload(user_id, enrich=False)
     payload["documents"] = utils.enrich_ess_test_cases_for_ui(
         payload.get("documents") or [],
