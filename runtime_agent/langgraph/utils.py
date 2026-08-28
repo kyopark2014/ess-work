@@ -209,6 +209,261 @@ def update_user_skills_list(user_id: str | None) -> str:
     return write_user_skills_list(user_id)
 
 
+def get_user_ess_dir(user_id: str | None) -> str:
+    """Per-user ESS root: ``{SESSION_STORAGE_DIR}/{user_id}/ess``."""
+    segment = sanitize_user_path_segment(user_id)
+    if not segment:
+        segment = "default"
+    return os.path.join(SESSION_STORAGE_DIR, segment, "ess")
+
+
+def _ensure_ess_on_path() -> str:
+    """Put bundled ``ess/`` on ``sys.path`` so ``doc_list`` is importable."""
+    ess_pkg = os.path.join(workingDir, "ess")
+    if ess_pkg not in sys.path:
+        sys.path.insert(0, ess_pkg)
+    return ess_pkg
+
+
+def ensure_user_ess_dir(user_id: str | None) -> str:
+    """Create ``{user}/ess``, ``regulations/``, ``projects/``, ``out/``, … and return ESS root."""
+    segment = sanitize_user_path_segment(user_id)
+    if not segment:
+        raise ValueError(
+            "Invalid user_id for ess path; expected a plain user id, "
+            "not a signed session cookie"
+        )
+    ess_dir = os.path.join(SESSION_STORAGE_DIR, segment, "ess")
+    for name in (
+        "",
+        "regulations",
+        "projects",
+        "drawings",
+        "test_cases",
+        "out",
+        os.path.join("out", "converted"),
+        os.path.join("out", "converted", ".pdf_pages"),
+    ):
+        os.makedirs(os.path.join(ess_dir, name) if name else ess_dir, exist_ok=True)
+    try:
+        _ensure_ess_on_path()
+        from doc_list import (
+            DRAWINGS,
+            PROJECTS,
+            TEST_CASES,
+            doc_list_path,
+            empty_doc_list,
+            migrate_raw_to_docs,
+            save_doc_list,
+            sync_doc_list_with_filesystem,
+        )
+
+        migrate_raw_to_docs(ess_dir)
+        if not doc_list_path(ess_dir).is_file():
+            docs = os.path.join(ess_dir, "regulations")
+            has_files = os.path.isdir(docs) and any(
+                os.path.isfile(os.path.join(docs, n)) for n in os.listdir(docs)
+            )
+            if has_files:
+                sync_doc_list_with_filesystem(ess_dir, user_id=segment)
+            else:
+                save_doc_list(ess_dir, empty_doc_list(user_id=segment))
+        if not doc_list_path(ess_dir, PROJECTS).is_file():
+            projects = os.path.join(ess_dir, "projects")
+            has_projects = os.path.isdir(projects) and any(
+                os.path.isfile(os.path.join(projects, n)) for n in os.listdir(projects)
+            )
+            if has_projects:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=PROJECTS
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=PROJECTS
+                )
+        if not doc_list_path(ess_dir, DRAWINGS).is_file():
+            drawings = os.path.join(ess_dir, "drawings")
+            has_drawings = os.path.isdir(drawings) and any(
+                os.path.isfile(os.path.join(drawings, n)) for n in os.listdir(drawings)
+            )
+            if has_drawings:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=DRAWINGS
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=DRAWINGS
+                )
+        if not doc_list_path(ess_dir, TEST_CASES).is_file():
+            test_cases = os.path.join(ess_dir, "test_cases")
+            has_tc = os.path.isdir(test_cases) and any(
+                os.path.isfile(os.path.join(test_cases, n)) for n in os.listdir(test_cases)
+            )
+            if has_tc:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=TEST_CASES
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=TEST_CASES
+                )
+    except Exception:
+        logger.debug("ess doc_list ensure skipped", exc_info=True)
+    logger.debug("user ess dir ready: %s", ess_dir)
+    return ess_dir
+
+
+def ess_test_cases_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "test_cases_list.json")
+
+
+def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
+    """Return ``(dest_path, sanitized_name, original_basename)``."""
+    original = os.path.basename((filename or "").strip()) or "upload.bin"
+    original = original.replace("\x00", "_") or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe = sanitize_ess_filename(original)
+    except Exception:
+        safe = original.replace(" ", "_")
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in safe)
+        while "__" in safe:
+            safe = safe.replace("__", "_")
+        stem, ext = os.path.splitext(safe)
+        safe = f"{stem.strip('._-') or 'document'}{ext.lower()}"
+    return os.path.join(docs_dir, safe), safe, original
+
+
+def save_ess_testcase(
+    xlsx_path: str,
+    *,
+    user_id: str | None = None,
+    cases_json_path: str | None = None,
+    title: str | None = None,
+    standard: str | None = None,
+    source_md: str | None = None,
+    rows: int | None = None,
+    filename: str | None = None,
+) -> dict[str, object]:
+    """Copy a generated test-case xlsx into ``{user}/ess/test_cases`` and update list."""
+    src = os.path.abspath(os.path.expanduser(xlsx_path or ""))
+    if not src or not os.path.isfile(src):
+        raise ValueError(f"테스트케이스 파일이 없습니다: {xlsx_path}")
+
+    ess = ensure_user_ess_dir(user_id)
+    tc_dir = os.path.join(ess, "test_cases")
+    os.makedirs(tc_dir, exist_ok=True)
+
+    preferred = filename or os.path.basename(src)
+    dest, safe_name, original_name = _ess_docs_dest_path(tc_dir, preferred)
+    if not safe_name.lower().endswith(".xlsx"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.xlsx"
+        dest = os.path.join(tc_dir, safe_name)
+    overwritten = os.path.isfile(dest)
+
+    with open(src, "rb") as f:
+        data = f.read()
+    if not data:
+        raise ValueError("저장할 파일이 비어 있습니다.")
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    stem = os.path.splitext(safe_name)[0]
+    json_dest: str | None = None
+    meta_title = title
+    meta_standard = standard
+    meta_source_md = source_md
+    meta_rows = rows
+
+    cases_src = cases_json_path
+    if cases_src:
+        cases_src = os.path.abspath(os.path.expanduser(cases_src))
+    if cases_src and os.path.isfile(cases_src):
+        try:
+            with open(cases_src, encoding="utf-8") as cf:
+                payload = json.load(cf)
+            if isinstance(payload, dict):
+                meta_title = meta_title or payload.get("title")
+                meta_standard = meta_standard or payload.get("standard")
+                meta_source_md = meta_source_md or payload.get("source_md")
+                cases = payload.get("cases")
+                if meta_rows is None and isinstance(cases, list):
+                    meta_rows = len(cases)
+        except Exception:
+            logger.debug("cases json metadata parse skipped", exc_info=True)
+        json_dest = os.path.join(tc_dir, f"{stem}.json")
+        try:
+            with open(cases_src, "rb") as f:
+                json_bytes = f.read()
+            with open(json_dest, "wb") as f:
+                f.write(json_bytes)
+        except OSError:
+            logger.exception("Failed to copy cases json sidecar")
+            json_dest = None
+
+    segment = sanitize_user_path_segment(user_id) or "default"
+    extra: dict[str, object] = {
+        "original_filename": original_name,
+        "sanitized": original_name != safe_name,
+    }
+    if meta_title:
+        extra["title"] = str(meta_title)
+    if meta_standard:
+        extra["standard"] = str(meta_standard)
+    if meta_source_md:
+        extra["source_md"] = str(meta_source_md)
+    if meta_rows is not None:
+        extra["rows"] = int(meta_rows)
+
+    try:
+        _ensure_ess_on_path()
+        from doc_list import TEST_CASES, upsert_document
+
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="saved",
+            user_id=segment,
+            json_path=os.path.abspath(json_dest) if json_dest else None,
+            extra=extra,
+            registry=TEST_CASES,
+        )
+    except Exception:
+        logger.exception("Failed to update ess test_cases_list after save")
+
+    logger.info(
+        "ess test_cases save user=%s → %s (original=%s, %s bytes%s)",
+        segment,
+        dest,
+        original_name,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "test_cases_dir": tc_dir,
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "json_path": json_dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+            "title": meta_title,
+            "standard": meta_standard,
+            "source_md": meta_source_md,
+            "rows": meta_rows,
+        },
+        "count": 1,
+        "test_cases_list": ess_test_cases_list_path(user_id),
+    }
+
+
 def load_config():
     config = None
 

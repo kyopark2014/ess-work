@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from session_user import resolve_session_user_id
+
 
 def _application_dir() -> Path:
     # .../application/skills/testcase-generator/scripts/this.py
@@ -31,13 +33,6 @@ def _ensure_app_on_path() -> None:
     app = str(_application_dir())
     if app not in sys.path:
         sys.path.insert(0, app)
-
-
-def _safe_user(user_id: str | None) -> str:
-    raw = (user_id or "").strip() or "default"
-    return (
-        raw.replace("/", "_").replace("\\", "_").replace("..", "_")[:128] or "default"
-    )
 
 
 def main() -> int:
@@ -85,11 +80,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"utils import failed: {exc}"}))
         return 1
 
-    user_id = _safe_user(
-        args.user
-        or os.environ.get("ESS_USER_ID")
-        or os.environ.get("USER_ID")
-    )
+    user_id = resolve_session_user_id(args.user, storage_path=str(xlsx))
 
     try:
         result = utils.save_ess_testcase(

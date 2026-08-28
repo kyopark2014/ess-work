@@ -445,10 +445,17 @@ def _upsert_managed_policy(
         return None
 
 
-# Runtime tools only touch CF-shared prefixes (upload/read artifacts, images, docs).
-# App data (tasks.db, litellm, graph, settings) lives under app-data/ on a
-# separate S3 Files FS that Runtime must never mount or read via S3 API.
-RUNTIME_S3_OBJECT_PREFIXES = ("artifacts/", "images/", "docs/")
+# Runtime tools only touch CF-shared prefixes (upload/read artifacts, images,
+# docs, session-uploads). Keep in sync with CLOUDFRONT_S3_SIGNED_PATHS in the
+# root installer.py. App data (tasks.db, litellm, graph, settings) lives under
+# app-data/ on a separate S3 Files FS that Runtime must never mount or read
+# via S3 API.
+RUNTIME_S3_OBJECT_PREFIXES = (
+    "artifacts/",
+    "images/",
+    "docs/",
+    "session-uploads/",
+)
 
 # S3 API Deny even if Allow is later widened.
 # - app-data/: ECS tasks.db / litellm / graph / settings (separate FS; never grant)
@@ -459,9 +466,9 @@ RUNTIME_S3_DENY_OBJECT_PREFIXES = ("app-data/", "agentcore-sessions/")
 def _project_s3_resource_arns(config) -> tuple:
     """Return (bucket_arns, object_arns, list_prefixes, deny_object_arns).
 
-    Object Allow is limited to ``artifacts/``, ``images/``, ``docs/`` on the
-    project bucket. Vector buckets are not granted — Runtime uses Bedrock
-    Retrieve, not direct S3 Vectors access.
+    Object Allow is limited to ``artifacts/``, ``images/``, ``docs/``, and
+    ``session-uploads/`` on the project bucket. Vector buckets are not granted
+    — Runtime uses Bedrock Retrieve, not direct S3 Vectors access.
     """
     account_id = config["accountId"]
     project_name = config.get("projectName", "agentcore")

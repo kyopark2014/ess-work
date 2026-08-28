@@ -43,9 +43,10 @@ from pathlib import Path
 from typing import Any
 from urllib import parse
 
+from session_user import resolve_session_user_id, safe_user as _safe_user
+
 
 COLUMNS = ("규격명", "항목", "원문", "기준", "판정결과", "비고")
-JUDGMENT_OPTIONS = ("합격", "불합격", "부분합격")
 COLUMN_ALIASES = {
     "규격명": ("규격명", "standard", "standard_name", "규격"),
     "항목": ("항목", "item", "clause", "id"),
@@ -76,13 +77,6 @@ def _session_storage() -> Path:
     if env:
         return Path(env)
     return _application_dir() / ".session_storage"
-
-
-def _safe_user(user_id: str | None) -> str:
-    raw = (user_id or "").strip() or "default"
-    return (
-        raw.replace("/", "_").replace("\\", "_").replace("..", "_")[:128] or "default"
-    )
 
 
 def _ensure_openpyxl():
@@ -396,11 +390,9 @@ def main() -> int:
         return 1
 
     config = _load_config()
-    user_id = _safe_user(
-        args.user
-        or os.environ.get("ESS_USER_ID")
-        or os.environ.get("USER_ID")
-        or config.get("default_user")
+    user_id = resolve_session_user_id(
+        args.user or config.get("default_user"),
+        storage_path=str(cases_path),
     )
     file_name = (args.output_name or _default_output_name(payload)).strip()
     if not file_name.lower().endswith(".xlsx"):
