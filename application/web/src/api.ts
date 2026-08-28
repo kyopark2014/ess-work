@@ -110,6 +110,7 @@ export interface EssStatus {
   exists?: boolean;
   status: "idle" | "queued" | "running" | "ready" | "error" | "unchanged" | string;
   foundation_model_parser_enabled?: boolean;
+  parallel_processing_enabled?: boolean;
   error?: string | null;
   message?: string | null;
   last_success_at?: string | null;
@@ -120,6 +121,7 @@ export interface EssStatus {
     page?: number | null;
     page_n?: number | null;
     pct?: number | null;
+    aggregated?: boolean | null;
   } | null;
 }
 
@@ -131,6 +133,7 @@ export interface EssConfig {
   documents?: Array<Record<string, unknown>>;
   doc_count?: number;
   foundation_model_parser_enabled?: boolean;
+  parallel_processing_enabled?: boolean;
 }
 
 export interface EssDocument {
@@ -250,7 +253,10 @@ export const api = {
       `/api/ess/documents/${encodeURIComponent(filename)}?kind=${encodeURIComponent(kind)}`,
       { method: "DELETE" },
     ),
-  putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
+  putEssConfig: (body: {
+    foundation_model_parser_enabled?: boolean;
+    parallel_processing_enabled?: boolean;
+  }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",
       body: JSON.stringify(body),

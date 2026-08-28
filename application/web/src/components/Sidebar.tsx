@@ -114,6 +114,7 @@ export function Sidebar({
     page?: number | null;
     page_n?: number | null;
     pct?: number | null;
+    aggregated?: boolean | null;
   } | null>(null);
   const [essSyncPopupOpen, setEssSyncPopupOpen] = useState(false);
   const [knowledgeSyncBusy, setKnowledgeSyncBusy] = useState(false);
