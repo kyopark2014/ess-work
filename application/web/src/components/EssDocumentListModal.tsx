@@ -5,8 +5,8 @@ import { copyDocumentForChat } from "../pendingLoadFile";
 
 interface Props {
   onClose: () => void;
-  /** ``regulation`` → regulations_list.json, ``project`` → project_list.json, ``test_case`` → test_cases_list.json */
-  kind?: "regulation" | "project" | "test_case";
+  /** ``regulation`` → regulations_list.json, ``project`` → project_list.json, ``drawing`` → drawings_list.json, ``test_case`` → test_cases_list.json */
+  kind?: "regulation" | "project" | "drawing" | "test_case";
 }
 
 function formatBytes(bytes: number | undefined): string {
@@ -14,6 +14,32 @@ function formatBytes(bytes: number | undefined): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatCreatedAt(value: string | undefined): string | null {
+  const raw = (value || "").trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function documentSublineParts(
+  doc: EssDocument,
+  extra: Array<string | null | undefined> = [],
+): string {
+  const timestamp =
+    doc.status === "extracted" || doc.status === "saved"
+      ? formatCreatedAt(doc.extracted_at) || formatCreatedAt(doc.created_at)
+      : formatCreatedAt(doc.created_at);
+  const parts = [timestamp, ...extra, formatBytes(doc.bytes)].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
 function openInNewTab(url: string) {
@@ -53,15 +79,19 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
   const title =
     kind === "project"
       ? "Projects"
-      : kind === "test_case"
-        ? "Test Cases"
-        : "Regulations";
+      : kind === "drawing"
+        ? "Drawings"
+        : kind === "test_case"
+          ? "Test Cases"
+          : "Regulations";
   const emptyHint =
     kind === "project"
       ? "등록된 Project 문서가 없습니다. Configure에서 Project 문서를 추가한 뒤 Sync 하세요."
-      : kind === "test_case"
-        ? "등록된 Test Case가 없습니다. testcase-generator 스킬로 생성·저장하세요."
-        : "등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.";
+      : kind === "drawing"
+        ? "등록된 Drawing 문서가 없습니다. Configure에서 Drawing 문서를 추가한 뒤 Sync 하세요."
+        : kind === "test_case"
+          ? "등록된 Test Case가 없습니다. testcase-generator 스킬로 생성·저장하세요."
+          : "등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.";
 
   useEffect(() => {
     let cancelled = false;
@@ -72,9 +102,11 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
         const data =
           kind === "project"
             ? await api.getEssProjectList(true)
-            : kind === "test_case"
-              ? await api.getEssTestCaseList()
-              : await api.getEssDocList(true);
+            : kind === "drawing"
+              ? await api.getEssDrawingList(true)
+              : kind === "test_case"
+                ? await api.getEssTestCaseList()
+                : await api.getEssDocList(true);
         if (cancelled) return;
         setDocuments(data.documents ?? []);
       } catch (err) {
@@ -174,9 +206,11 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
     const kindLabel =
       kind === "project"
         ? "Project"
-        : kind === "test_case"
-          ? "Test Case"
-          : "Regulation";
+        : kind === "drawing"
+          ? "Drawing"
+          : kind === "test_case"
+            ? "Test Case"
+            : "Regulation";
     const confirmed = window.confirm(
       `"${label}" ${kindLabel} 문서와 관련 파일(원본·JSON${
         kind === "test_case" ? "" : "·Markdown"
@@ -251,12 +285,6 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                   typeof doc.rows === "number" && Number.isFinite(doc.rows)
                     ? `${doc.rows} rows`
                     : null;
-                const subParts = [
-                  doc.standard || null,
-                  doc.status || "—",
-                  rows,
-                  formatBytes(doc.bytes),
-                ].filter(Boolean);
                 return (
                   <li key={key} className="ess-doc-list-item">
                     <div className="ess-doc-list-meta">
@@ -264,7 +292,11 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                         {itemTitle}
                       </span>
                       <span className="ess-doc-list-sub">
-                        {subParts.join(" · ")}
+                        {documentSublineParts(doc, [
+                          doc.standard || null,
+                          doc.status || "—",
+                          rows,
+                        ])}
                       </span>
                     </div>
                     <div className="ess-doc-list-actions">
@@ -338,7 +370,7 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                       {itemTitle}
                     </span>
                     <span className="ess-doc-list-sub">
-                      {doc.status || "—"} · {formatBytes(doc.bytes)}
+                      {documentSublineParts(doc, [doc.status || "—"])}
                     </span>
                   </div>
                   <div className="ess-doc-list-actions">

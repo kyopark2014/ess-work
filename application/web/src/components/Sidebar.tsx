@@ -40,6 +40,7 @@ const ESS_OPTIONS = [
   "Regulations",
   "Test Cases",
   "Projects",
+  "Drawings",
   "Sync",
   "Configure",
 ] as const;
@@ -102,7 +103,7 @@ export function Sidebar({
   const [essConfigureOpen, setEssConfigureOpen] = useState(false);
   const [essDocListOpen, setEssDocListOpen] = useState(false);
   const [essDocListKind, setEssDocListKind] = useState<
-    "regulation" | "project" | "test_case"
+    "regulation" | "project" | "drawing" | "test_case"
   >("regulation");
   const [essSyncBusy, setEssSyncBusy] = useState(false);
   const [essSyncMessage, setEssSyncMessage] = useState<string | null>(null);
@@ -166,6 +167,12 @@ export function Sidebar({
     }
     if (choice === "Projects") {
       setEssDocListKind("project");
+      setEssDocListOpen(true);
+      handleSettingApplied();
+      return;
+    }
+    if (choice === "Drawings") {
+      setEssDocListKind("drawing");
       setEssDocListOpen(true);
       handleSettingApplied();
       return;
