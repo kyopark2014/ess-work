@@ -65,7 +65,12 @@ ALB_ORIGIN_HEADER_SECRET_NAME = f"{project_name}/cloudfront-alb-origin-header"
 # HMAC key for Web UI session cookies (never hardcode in source).
 SESSION_SIGNING_KEY_SECRET_NAME = f"{project_name}/session-signing-key"
 CLOUDFRONT_SIGNING_KEY_SECRET_NAME = f"{project_name}/cloudfront-signing-key"
-CLOUDFRONT_S3_SIGNED_PATHS = ("/images/*", "/docs/*", "/artifacts/*")
+CLOUDFRONT_S3_SIGNED_PATHS = (
+    "/images/*",
+    "/docs/*",
+    "/artifacts/*",
+    "/session-uploads/*",
+)
 # Prefer a project custom ResponseHeadersPolicy (security headers + strip origin Server).
 # Managed SecurityHeadersPolicy (67f7725c-…) does not remove Server: uvicorn.
 _cloudfront_response_headers_policy_id: Optional[str] = None
@@ -109,7 +114,7 @@ def _find_s3_oai_id_from_distribution(dist_id: str) -> Optional[str]:
 
 
 def ensure_cloudfront_oai_bucket_policy(s3_bucket_name: str, oai_id: str) -> None:
-    """Restrict OAI s3:GetObject to CF-served prefixes (images/docs/artifacts)."""
+    """Restrict OAI s3:GetObject to CF-served prefixes (images/docs/artifacts/session-uploads)."""
     if not oai_id:
         raise ValueError("oai_id is required for CloudFront S3 bucket policy")
     resources = _cloudfront_oai_get_object_resources(s3_bucket_name)
@@ -5355,7 +5360,7 @@ def _behavior_has_trusted_key_group(behavior: Dict, key_group_id: str) -> bool:
 
 
 def ensure_cloudfront_s3_signed_cookies(dist_id: str, key_group_id: str) -> None:
-    """Ensure /images|/docs|/artifacts behaviors exist and require TrustedKeyGroups."""
+    """Ensure S3 path behaviors exist and require TrustedKeyGroups."""
     if not key_group_id:
         raise ValueError("key_group_id is required for CloudFront signed cookies")
 
@@ -5683,7 +5688,7 @@ def create_cloudfront_distribution(
             "Compress": True
         },
         "CacheBehaviors": {
-            "Quantity": 3,
+            "Quantity": 4,
             "Items": [
                 _cloudfront_s3_cache_behavior(
                     "/images/*", f"s3-{project_name}", key_group_id
@@ -5693,6 +5698,9 @@ def create_cloudfront_distribution(
                 ),
                 _cloudfront_s3_cache_behavior(
                     "/artifacts/*", f"s3-{project_name}", key_group_id
+                ),
+                _cloudfront_s3_cache_behavior(
+                    "/session-uploads/*", f"s3-{project_name}", key_group_id
                 ),
             ]
         },
@@ -5740,7 +5748,10 @@ def create_cloudfront_distribution(
         logger.info(f"✓ CloudFront distribution created (ALB + S3): {distribution_domain}")
         logger.info(f"  Distribution ID: {distribution_id}")
         logger.info(f"  Default origin: ALB {alb_info['dns']}")
-        logger.info(f"  /images/*, /docs/*, /artifacts/* origins: S3 bucket {s3_bucket_name}")
+        logger.info(
+            f"  /images/*, /docs/*, /artifacts/*, /session-uploads/* "
+            f"origins: S3 bucket {s3_bucket_name}"
+        )
         logger.warning("  Note: CloudFront distribution may take 15-20 minutes to deploy")
         
     except ClientError as e:

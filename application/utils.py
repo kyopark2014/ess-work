@@ -2176,6 +2176,63 @@ def head_ess_pdf_on_s3(
         return False
 
 
+def ess_pdf_s3_key_for_kind(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    kind: str = "regulation",
+) -> str | None:
+    """S3 key for an ESS PDF under session-uploads."""
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    if kind == "project":
+        return ess_projects_s3_key(safe_name, user_id=user_id)
+    return ess_pdf_s3_key(safe_name, user_id=user_id)
+
+
+def stream_ess_pdf_from_s3(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    kind: str = "regulation",
+):
+    """Stream an ESS PDF from S3 (session-uploads staging key).
+
+    Used by the PDF viewer API when the local copy is missing. Avoids redirecting
+    to CloudFront ``/session-uploads/*`` on distributions that still route that
+    prefix to the ALB default behavior.
+    """
+    from fastapi.responses import StreamingResponse
+
+    key = ess_pdf_s3_key_for_kind(file_name, user_id=user_id, kind=kind)
+    if not s3_bucket or not key:
+        return None
+    safe_name = os.path.basename(file_name or "").strip() or "document.pdf"
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        obj = s3_client.get_object(Bucket=s3_bucket, Key=key)
+        body = obj["Body"]
+        content_type = obj.get("ContentType") or "application/pdf"
+        if content_type in ("binary/octet-stream", "no info", "application/octet-stream"):
+            content_type = "application/pdf"
+        return StreamingResponse(
+            body.iter_chunks(chunk_size=1024 * 256),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_name}"',
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+    except Exception:
+        logger.error(
+            "Error streaming ESS pdf from S3 key=%s: %s",
+            key,
+            traceback.format_exc(),
+        )
+        return None
+
+
 def _head_s3_object_quiet(s3_key: str) -> dict | None:
     if not s3_bucket or not s3_key:
         return None
@@ -2371,3 +2428,208 @@ def enrich_ess_test_cases_for_ui(
         item["kind"] = "test_case"
         enriched.append(item)
     return enriched
+
+
+def _unlink_under_roots(path: str, *roots: str) -> bool:
+    """Delete a file only if it resolves under one of *roots*. Returns True if removed."""
+    from pathlib import Path
+
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    if not target.is_file():
+        return False
+    for root in roots:
+        try:
+            base = Path(root).expanduser().resolve()
+            target.relative_to(base)
+        except (OSError, ValueError):
+            continue
+        try:
+            target.unlink()
+            return True
+        except OSError:
+            logger.warning("Failed to unlink ESS file: %s", target)
+            return False
+    return False
+
+
+def _delete_s3_key_quiet(s3_key: str | None) -> bool:
+    """Best-effort S3 object delete. Returns True if delete was attempted successfully."""
+    if not s3_bucket or not s3_key:
+        return False
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.delete_object(Bucket=s3_bucket, Key=s3_key)
+        return True
+    except Exception:
+        logger.debug("ESS S3 delete skipped for %s", s3_key, exc_info=True)
+        return False
+
+
+def delete_ess_document(
+    user_id: str | None,
+    filename: str,
+    *,
+    kind: str = "regulation",
+) -> dict:
+    """Remove one ESS document: local source + sidecars + list entry (+ S3 best-effort).
+
+    Deletes:
+    - Regulations/Projects: ``{stem}.pdf`` (or source), ``{stem}.md``, ``{stem}.json``
+    - Test Cases: ``{stem}.xlsx``, ``{stem}.json``
+    - Optional intermediates under ``out/converted/.pdf_pages/{stem}_*``
+    - Local ``artifacts/md/{stem}.md`` and matching S3 objects when configured
+    """
+    import shutil
+    from pathlib import Path as _Path
+
+    name = os.path.basename(filename or "").strip()
+    if not name or name in {".", ".."}:
+        raise ValueError("Invalid document name")
+
+    kind_norm = (kind or "regulation").strip().lower()
+    if kind_norm not in {"regulation", "project", "test_case"}:
+        raise ValueError(f"Unsupported kind: {kind}")
+
+    _ensure_ess_on_path()
+    from doc_list import (
+        PROJECTS,
+        REGULATIONS,
+        TEST_CASES,
+        get_document,
+        remove_document,
+    )
+
+    registry = {
+        "regulation": REGULATIONS,
+        "project": PROJECTS,
+        "test_case": TEST_CASES,
+    }[kind_norm]
+
+    ess = ensure_user_ess_dir(user_id)
+    artifacts_root = ensure_user_artifacts_dir(user_id)
+    docs_dir = {
+        "regulation": ess_docs_dir(user_id),
+        "project": ess_projects_dir(user_id),
+        "test_case": ess_test_cases_dir(user_id),
+    }[kind_norm]
+
+    entry = get_document(ess, filename=name, registry=registry)
+    if entry is None:
+        # Registry miss: still allow cleanup if source/sidecar files exist on disk.
+        stem = os.path.splitext(name)[0]
+        entry = {
+            "filename": name,
+            "source_path": os.path.join(docs_dir, name),
+            "md_path": (
+                os.path.join(docs_dir, f"{stem}.md")
+                if kind_norm != "test_case"
+                else None
+            ),
+            "json_path": os.path.join(docs_dir, f"{stem}.json"),
+        }
+        exists = any(
+            p and os.path.isfile(p)
+            for p in (
+                entry["source_path"],
+                entry.get("md_path"),
+                entry.get("json_path"),
+            )
+        )
+        if not exists:
+            raise FileNotFoundError(f"Document not found: {name}")
+
+    stem = os.path.splitext(str(entry.get("filename") or name))[0] or os.path.splitext(
+        name
+    )[0]
+    deleted_files: list[str] = []
+    allow_roots = (ess, artifacts_root, docs_dir)
+
+    paths_to_delete: list[str] = []
+    for key in ("source_path", "md_path", "json_path"):
+        raw = str(entry.get(key) or "").strip()
+        if raw:
+            paths_to_delete.append(raw)
+
+    # Always include stem-based siblings next to the registry folder.
+    if kind_norm == "test_case":
+        for sibling in (f"{stem}.xlsx", f"{stem}.json", name):
+            paths_to_delete.append(os.path.join(docs_dir, sibling))
+    else:
+        for sibling in (f"{stem}.pdf", f"{stem}.md", f"{stem}.json", name):
+            paths_to_delete.append(os.path.join(docs_dir, sibling))
+        md_file = str(entry.get("md_file") or "").strip()
+        if md_file:
+            paths_to_delete.append(os.path.join(docs_dir, os.path.basename(md_file)))
+            paths_to_delete.append(ess_md_local_artifacts_path(md_file, user_id=user_id))
+        else:
+            paths_to_delete.append(
+                ess_md_local_artifacts_path(f"{stem}.md", user_id=user_id)
+            )
+
+    seen: set[str] = set()
+    for path in paths_to_delete:
+        try:
+            resolved = str(_Path(path).expanduser().resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _unlink_under_roots(resolved, *allow_roots):
+            deleted_files.append(resolved)
+
+    # FMP intermediates: ``out/converted/.pdf_pages/{stem}_*``
+    pages_root = _Path(ess_converted_dir(user_id)) / ".pdf_pages"
+    deleted_dirs: list[str] = []
+    if kind_norm != "test_case" and pages_root.is_dir() and stem:
+        for work in pages_root.iterdir():
+            if not work.is_dir():
+                continue
+            if work.name == stem or work.name.startswith(f"{stem}_"):
+                try:
+                    shutil.rmtree(work)
+                    deleted_dirs.append(str(work))
+                except OSError:
+                    logger.warning("Failed to remove pdf_pages dir: %s", work)
+
+    # Best-effort S3 cleanup (PDF staging + published markdown).
+    s3_deleted: list[str] = []
+    entry_s3 = str(entry.get("s3_key") or "").strip()
+    if entry_s3 and _delete_s3_key_quiet(entry_s3):
+        s3_deleted.append(entry_s3)
+
+    if kind_norm == "project":
+        pdf_key = ess_projects_s3_key(f"{stem}.pdf", user_id=user_id)
+    elif kind_norm == "regulation":
+        pdf_key = ess_docs_s3_key(f"{stem}.pdf", user_id=user_id)
+    else:
+        pdf_key = None
+    if pdf_key and pdf_key not in s3_deleted and _delete_s3_key_quiet(pdf_key):
+        s3_deleted.append(pdf_key)
+
+    if kind_norm != "test_case":
+        md_key = ess_md_artifacts_s3_key(f"{stem}.md", user_id=user_id)
+        if md_key not in s3_deleted and _delete_s3_key_quiet(md_key):
+            s3_deleted.append(md_key)
+
+    removed = remove_document(ess, filename=name, registry=registry)
+    if not removed and entry.get("source_path"):
+        removed = remove_document(
+            ess, source_path=str(entry.get("source_path")), registry=registry
+        )
+
+    if not removed and not deleted_files and not deleted_dirs:
+        raise FileNotFoundError(f"Document not found: {name}")
+
+    return {
+        "ok": True,
+        "filename": name,
+        "kind": kind_norm,
+        "removed_from_list": bool(removed),
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "s3_deleted": s3_deleted,
+    }

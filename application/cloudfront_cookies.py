@@ -1,4 +1,4 @@
-"""CloudFront signed cookies for /artifacts, /docs, /images.
+"""CloudFront signed cookies for /artifacts, /docs, /images, /session-uploads.
 
 S3 cache behaviors require a Trusted Key Group. After login the Web UI sets
 CloudFront-Policy / CloudFront-Signature / CloudFront-Key-Pair-Id on the

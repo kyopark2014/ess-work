@@ -227,6 +227,22 @@ export const api = {
     ),
   getEssTestCaseList: () =>
     request<EssDocListResult>("/api/ess/test-case-list"),
+  deleteEssDocument: (
+    filename: string,
+    kind: "regulation" | "project" | "test_case" = "regulation",
+  ) =>
+    request<{
+      ok: boolean;
+      filename: string;
+      kind: string;
+      removed_from_list?: boolean;
+      deleted_files?: string[];
+      deleted_dirs?: string[];
+      s3_deleted?: string[];
+    }>(
+      `/api/ess/documents/${encodeURIComponent(filename)}?kind=${encodeURIComponent(kind)}`,
+      { method: "DELETE" },
+    ),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",

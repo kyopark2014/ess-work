@@ -41,10 +41,15 @@ function testCaseCopyPath(doc: EssDocument): string | null {
   return src || null;
 }
 
+function documentKey(doc: EssDocument): string {
+  return doc.filename || doc.md_file || doc.display_name || "doc";
+}
+
 export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
   const [documents, setDocuments] = useState<EssDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const title =
     kind === "project"
       ? "Projects"
@@ -155,6 +160,45 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
     onClose();
   }
 
+  async function deleteDocument(doc: EssDocument) {
+    const filename = (doc.filename || "").trim();
+    if (!filename) {
+      setError("삭제할 파일명이 없습니다.");
+      return;
+    }
+    const label =
+      doc.display_name ||
+      doc.title ||
+      doc.original_filename ||
+      filename;
+    const kindLabel =
+      kind === "project"
+        ? "Project"
+        : kind === "test_case"
+          ? "Test Case"
+          : "Regulation";
+    const confirmed = window.confirm(
+      `"${label}" ${kindLabel} 문서와 관련 파일(원본·JSON${
+        kind === "test_case" ? "" : "·Markdown"
+      })을 삭제할까요?\n이 작업은 되돌릴 수 없습니다.`,
+    );
+    if (!confirmed) return;
+
+    const key = documentKey(doc);
+    setDeletingKey(key);
+    setError(null);
+    try {
+      await api.deleteEssDocument(filename, kind);
+      setDocuments((prev) =>
+        prev.filter((d) => (d.filename || "").trim() !== filename),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingKey(null);
+    }
+  }
+
   return createPortal(
     <div
       className="modal-overlay"
@@ -169,18 +213,24 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
         <h2 id="ess-doc-list-title">{title}</h2>
         {loading ? (
           <p className="ess-configure-muted">문서 목록을 불러오는 중…</p>
-        ) : error ? (
-          <p className="modal-error" role="alert">
-            {error}
-          </p>
         ) : documents.length === 0 ? (
-          <p className="ess-configure-docs-empty">
-            {emptyHint}
-          </p>
+          error ? (
+            <p className="modal-error" role="alert">
+              {error}
+            </p>
+          ) : (
+            <p className="ess-configure-docs-empty">{emptyHint}</p>
+          )
         ) : (
-          <ul className="ess-doc-list">
+          <>
+            {error ? (
+              <p className="modal-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <ul className="ess-doc-list">
             {documents.map((doc) => {
-              const key = doc.filename || doc.md_file || doc.display_name || "doc";
+              const key = documentKey(doc);
               const itemTitle =
                 doc.display_name ||
                 doc.title ||
@@ -188,6 +238,8 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                 doc.filename ||
                 doc.md_file ||
                 "document";
+              const canDelete = Boolean((doc.filename || "").trim());
+              const isDeleting = deletingKey === key;
               if (kind === "test_case") {
                 const canJson = Boolean(
                   doc.json_available && doc.json_viewer_url,
@@ -219,7 +271,7 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                       <button
                         type="button"
                         className="ess-doc-list-btn"
-                        disabled={!canJson}
+                        disabled={!canJson || isDeleting}
                         title={
                           canJson
                             ? "JSON viewer (새 탭)"
@@ -232,7 +284,7 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                       <button
                         type="button"
                         className="ess-doc-list-btn"
-                        disabled={!canXlsx}
+                        disabled={!canXlsx || isDeleting}
                         title={
                           canXlsx
                             ? "Excel 다운로드"
@@ -244,8 +296,8 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                       </button>
                       <button
                         type="button"
-                        className="ess-doc-list-btn"
-                        disabled={!canCopy}
+                        className="ess-doc-list-btn ess-doc-list-btn-success"
+                        disabled={!canCopy || isDeleting}
                         title={
                           canCopy
                             ? `입력창에 파일 첨부 + 경로 복사\n${copyPath}`
@@ -254,6 +306,19 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                         onClick={() => void copyTestCasePath(doc)}
                       >
                         복사
+                      </button>
+                      <button
+                        type="button"
+                        className="ess-doc-list-btn ess-doc-list-btn-danger"
+                        disabled={!canDelete || isDeleting}
+                        title={
+                          canDelete
+                            ? "원본·JSON 및 목록에서 삭제"
+                            : "삭제할 파일명이 없습니다"
+                        }
+                        onClick={() => void deleteDocument(doc)}
+                      >
+                        {isDeleting ? "삭제 중…" : "삭제"}
                       </button>
                     </div>
                   </li>
@@ -280,7 +345,7 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                     <button
                       type="button"
                       className="ess-doc-list-btn"
-                      disabled={!canMd}
+                      disabled={!canMd || isDeleting}
                       title={
                         canMd
                           ? "Markdown viewer (새 탭)"
@@ -293,7 +358,7 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                     <button
                       type="button"
                       className="ess-doc-list-btn"
-                      disabled={!canPdf}
+                      disabled={!canPdf || isDeleting}
                       title={
                         canPdf ? "PDF (새 탭)" : "PDF 파일을 찾을 수 없습니다"
                       }
@@ -303,8 +368,8 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                     </button>
                     <button
                       type="button"
-                      className="ess-doc-list-btn"
-                      disabled={!canCopy}
+                      className="ess-doc-list-btn ess-doc-list-btn-success"
+                      disabled={!canCopy || isDeleting}
                       title={
                         canCopy
                           ? `입력창에 Markdown 첨부 + CloudFront URL 복사\n${mdCopyUrl}`
@@ -314,11 +379,25 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
                     >
                       복사
                     </button>
+                    <button
+                      type="button"
+                      className="ess-doc-list-btn ess-doc-list-btn-danger"
+                      disabled={!canDelete || isDeleting}
+                      title={
+                        canDelete
+                          ? "원본·JSON·Markdown 및 목록에서 삭제"
+                          : "삭제할 파일명이 없습니다"
+                      }
+                      onClick={() => void deleteDocument(doc)}
+                    >
+                      {isDeleting ? "삭제 중…" : "삭제"}
+                    </button>
                   </div>
                 </li>
               );
             })}
-          </ul>
+            </ul>
+          </>
         )}
         <div className="modal-actions">
           <button

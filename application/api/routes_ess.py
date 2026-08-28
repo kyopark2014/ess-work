@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from application.api.routes_auth import require_user_id
@@ -317,35 +317,67 @@ def get_ess_test_case_list(request: Request) -> dict:
     }
 
 
+@router.delete("/documents/{filename}")
+def api_delete_ess_document(
+    filename: str,
+    request: Request,
+    kind: str = Query("regulation"),
+) -> dict:
+    """Delete an ESS document (source + JSON/MD sidecars + list entry).
+
+    ``kind``: ``regulation`` | ``project`` | ``test_case``
+    """
+    user_id = require_user_id(request)
+    name = _safe_doc_name(filename)
+    scope = (kind or "regulation").strip().lower()
+    if scope not in {"regulation", "project", "test_case"}:
+        raise HTTPException(
+            status_code=400,
+            detail="kind must be regulation, project, or test_case",
+        )
+    try:
+        return utils.delete_ess_document(user_id, name, kind=scope)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/documents/{filename}/pdf")
 def get_ess_document_pdf(
     filename: str,
     request: Request,
     kind: str = Query("regulation"),
 ):
-    """Open PDF in-browser: redirect to CloudFront when available, else stream local file."""
+    """Open PDF in-browser: stream local file, else S3; do not redirect to CloudFront.
+
+    ``/session-uploads/*`` must be an S3 cache behavior on CloudFront for direct
+    ``pdf_url`` links to work in a new tab. The API route stays reliable by
+    serving bytes from ECS/S3 instead of a 302 to CloudFront.
+    """
     user_id = require_user_id(request)
     name = _safe_doc_name(filename)
     if not name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Not a PDF document")
 
     scope = "project" if kind == "project" else "regulation"
-    if utils.head_ess_pdf_on_s3(name, user_id=user_id, kind=scope):
-        cf = (
-            utils.ess_project_pdf_public_url(name, user_id=user_id)
-            if scope == "project"
-            else utils.ess_pdf_public_url(name, user_id=user_id)
+    try:
+        path = _resolve_ess_doc_path(user_id, name, kind=scope)
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename=name,
+            headers={"Content-Disposition": f'inline; filename="{name}"'},
         )
-        if cf:
-            return RedirectResponse(url=cf, status_code=302)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
 
-    path = _resolve_ess_doc_path(user_id, name, kind=scope)
-    return FileResponse(
-        path,
-        media_type="application/pdf",
-        filename=name,
-        headers={"Content-Disposition": f'inline; filename="{name}"'},
-    )
+    streamed = utils.stream_ess_pdf_from_s3(name, user_id=user_id, kind=scope)
+    if streamed is not None:
+        return streamed
+
+    raise HTTPException(status_code=404, detail=f"Document not found: {name}")
 
 
 @router.get("/documents/{filename}/markdown")
