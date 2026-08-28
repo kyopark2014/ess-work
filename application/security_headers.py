@@ -79,6 +79,19 @@ _GRAPH_CONTENT_SECURITY_POLICY = (
     "object-src 'none'"
 )
 
+# ESS markdown/JSON viewers (new tab) load marked + github-markdown-css from jsdelivr.
+_DOCUMENT_VIEWER_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: blob: https:; "
+    "font-src 'self' data:; "
+    f"connect-src 'self' {_s3_connect_src_hosts()}; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "object-src 'none'"
+)
+
 _BASE_HEADERS = [
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
@@ -93,6 +106,17 @@ _GRAPH_HEADERS = [
     (b"referrer-policy", b"strict-origin-when-cross-origin"),
     (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
     (b"content-security-policy", _GRAPH_CONTENT_SECURITY_POLICY.encode("latin-1")),
+]
+
+_DOCUMENT_VIEWER_HEADERS = [
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+    (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+    (
+        b"content-security-policy",
+        _DOCUMENT_VIEWER_CONTENT_SECURITY_POLICY.encode("latin-1"),
+    ),
 ]
 
 _HSTS = (b"strict-transport-security", b"max-age=31536000; includeSubDomains")
@@ -118,6 +142,14 @@ def _is_graph_html(scope: Scope) -> bool:
     return path in {"/api/graph"}
 
 
+def _is_document_viewer_html(scope: Scope) -> bool:
+    """ESS markdown / JSON HTML viewers opened in a new browser tab."""
+    path = scope.get("path") or "/"
+    return path.startswith("/api/ess/documents/") and (
+        path.endswith("/markdown") or path.endswith("/json")
+    )
+
+
 def _header_names(headers: list[tuple[bytes, bytes]]) -> set[bytes]:
     return {name.lower() for name, _ in headers}
 
@@ -134,8 +166,14 @@ class SecurityHeadersMiddleware:
             return
 
         is_graph = _is_graph_html(scope)
+        is_doc_viewer = _is_document_viewer_html(scope)
         add_https = _viewer_is_https(scope)
-        extra = _GRAPH_HEADERS if is_graph else _BASE_HEADERS
+        if is_graph:
+            extra = _GRAPH_HEADERS
+        elif is_doc_viewer:
+            extra = _DOCUMENT_VIEWER_HEADERS
+        else:
+            extra = _BASE_HEADERS
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
