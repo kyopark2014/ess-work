@@ -32,6 +32,9 @@ from tavily_tool_interceptor import TavilyToolCallInterceptor
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.checkpoint.memory import MemorySaver
 
+# Long testcase extraction on large standards can exceed 5 minutes.
+BEDROCK_READ_TIMEOUT = 600
+
 try:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     SQLITE_CHECKPOINTER_AVAILABLE = True
@@ -592,7 +595,7 @@ def _build_openai_chat(profile: dict, max_output_tokens: int):
         region_name=bedrock_region,
         config=Config(
             retries={"max_attempts": 30},
-            read_timeout=300,
+            read_timeout=BEDROCK_READ_TIMEOUT,
         ),
     )
     chat = ChatBedrock(
@@ -638,7 +641,7 @@ def get_chat():
             region_name=bedrock_region,
             config=Config(
                 retries={"max_attempts": 30},
-                read_timeout=300,
+                read_timeout=BEDROCK_READ_TIMEOUT,
             ),
         )
         converse_kwargs = {
@@ -670,7 +673,7 @@ def get_chat():
             retries = {
                 'max_attempts': 30
             },
-            read_timeout=300
+            read_timeout=BEDROCK_READ_TIMEOUT,
         )
     )
 
@@ -1028,7 +1031,7 @@ def _s3_key_from_file_ref(file_ref: str, *, default_prefix: str = s3_image_prefi
 
     raw = raw.split("?", 1)[0].split("#", 1)[0]
 
-    for prefix in (s3_image_prefix, s3_prefix, "images", "docs"):
+    for prefix in (s3_image_prefix, s3_prefix, "images", "docs", "artifacts"):
         marker = f"/{prefix}/"
         idx = raw.find(marker)
         if idx >= 0:
@@ -1370,6 +1373,109 @@ def _extract_text_from_local_document(file_path: str, file_type: str) -> str:
     return _extract_text_from_document_bytes(data, file_type)
 
 
+def _ess_md_artifacts_s3_key(file_name: str) -> str:
+    """``artifacts/{projectName}/{user}/md/{name}.md`` on the project bucket."""
+    segment = utils.sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename((file_name or "").strip()) or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    project = (projectName or "ess-work").strip() or "ess-work"
+    return f"artifacts/{project}/{segment}/md/{safe_name}"
+
+
+def _ess_md_workspace_path(file_name: str) -> str:
+    """Runtime workspace mirror: ``/mnt/workspace/{user}/artifacts/md/{name}.md``."""
+    segment = utils.sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename((file_name or "").strip()) or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    return os.path.join(SESSION_STORAGE_DIR, segment, "artifacts", "md", safe_name)
+
+
+def _format_document_text_summary(local_path: str, extracted: str) -> str:
+    max_chars = 100000
+    if len(extracted) > max_chars:
+        extracted = extracted[:max_chars] + "\n\n…(이하 생략)"
+    return (
+        f"파일 경로: {local_path}\n"
+        f"에이전트는 `read_file` 또는 `bash`로 위 경로의 Markdown을 읽어 작업하세요. "
+        f"`get_raw_text` / `get_markdown`(CloudFront URL)은 사용하지 마세요.\n\n"
+        f"{extracted}"
+    )
+
+
+def _load_markdown_summary(file_ref: str, file_name: str, file_type: str) -> str | None:
+    """Resolve ESS markdown from workspace mount or S3 (not CloudFront HTTP)."""
+    if file_type not in ("md", "markdown", "txt"):
+        return None
+
+    ws_path = _ess_md_workspace_path(file_name)
+    if file_ref.startswith("/mnt/workspace/"):
+        ws_path = file_ref.strip()
+    data, source = _load_workspace_file_bytes(ws_path)
+    if data:
+        try:
+            extracted = _extract_text_from_document_bytes(data, file_type)
+        except Exception as e:
+            logger.error("Failed to extract markdown from %s (%s): %s", ws_path, source, e)
+            return (
+                f"파일 경로: {ws_path}\n"
+                f"텍스트 추출에 실패했습니다 ({e}). "
+                f"`read_file`로 `{ws_path}` 를 직접 읽어 분석하세요."
+            )
+        if extracted:
+            return _format_document_text_summary(ws_path, extracted)
+        return (
+            f"파일 경로: {ws_path}\n"
+            f"Markdown 본문이 비어 있습니다. `read_file`로 `{ws_path}` 를 확인하세요."
+        )
+
+    s3_key = _s3_key_from_file_ref(file_ref)
+    if not s3_key or not s3_key.lower().endswith(".md"):
+        s3_key = _ess_md_artifacts_s3_key(file_name)
+    if not s3_key or not s3_bucket:
+        return None
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        logger.info("loading markdown from s3://%s/%s", s3_bucket, s3_key)
+        obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+        data = obj["Body"].read()
+    except Exception:
+        logger.warning(
+            "Failed to load markdown from s3://%s/%s: %s",
+            s3_bucket,
+            s3_key,
+            traceback.format_exc(),
+        )
+        return None
+
+    try:
+        os.makedirs(os.path.dirname(ws_path), exist_ok=True)
+        with open(ws_path, "wb") as f:
+            f.write(data)
+    except Exception as cache_err:
+        logger.warning("could not cache markdown onto workspace %s: %s", ws_path, cache_err)
+
+    try:
+        extracted = _extract_text_from_document_bytes(data, file_type)
+    except Exception as e:
+        logger.error("Failed to extract markdown bytes from %s: %s", s3_key, e)
+        return (
+            f"파일 경로: {ws_path}\n"
+            f"S3: s3://{s3_bucket}/{s3_key}\n"
+            f"텍스트 추출에 실패했습니다 ({e}). "
+            f"`read_file` 또는 S3(`boto3`)로 `{ws_path}` 를 읽어 분석하세요."
+        )
+    if not extracted:
+        return (
+            f"파일 경로: {ws_path}\n"
+            f"S3: s3://{s3_bucket}/{s3_key}\n"
+            f"Markdown 본문이 비어 있습니다."
+        )
+    return _format_document_text_summary(ws_path, extracted)
+
+
 def get_summary_of_uploaded_file(file_ref: str, prompt: str = "") -> str:
     """Analyze an uploaded file (by URL, workspace path, or name) and return a text summary.
 
@@ -1421,6 +1527,10 @@ def get_summary_of_uploaded_file(file_ref: str, prompt: str = "") -> str:
         if len(extracted) > max_chars:
             extracted = extracted[:max_chars] + "\n\n…(이하 생략)"
         return f"파일 경로: {local_path}\n\n{extracted}"
+
+    md_summary = _load_markdown_summary(file_ref, file_name, file_type)
+    if md_summary is not None:
+        return md_summary
 
     if file_type in ("png", "jpeg", "jpg", "webp", "gif"):
         s3_client = boto3.client(

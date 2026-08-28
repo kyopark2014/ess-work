@@ -2714,6 +2714,11 @@ def enrich_ess_documents_for_ui(
             if md_name
             else None
         )
+        segment = sanitize_user_path_segment(user_id) or "default"
+        if md_name:
+            item["md_workspace_path"] = (
+                f"/mnt/workspace/{segment}/artifacts/md/{md_name}"
+            )
         item["display_name"] = (
             str(item.get("original_filename") or "").strip() or filename or md_name
         )

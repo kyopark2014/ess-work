@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
+# web_fetch MCP (mcp-server-fetch-typescript) uses Playwright headless Chromium.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx -y playwright install-deps chromium \
+    && npx -y playwright install chromium
+
 RUN pip install --upgrade "setuptools>=83.0.0" \
     && pip install "urllib3>=2.7.0" boto3 botocore --upgrade
 RUN pip install langchain_aws langchain langchain_community langgraph langchain-openai "openai>=2.41.0" aws-bedrock-token-generator
@@ -37,7 +42,7 @@ RUN pip install opentelemetry-instrumentation-langchain
 COPY . .
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /ms-playwright
 
 USER appuser
 
@@ -46,6 +51,7 @@ ENV PYTHONPATH=/app
 # Minimal config (MCP/LangGraph agent without full RAG keys in config.json)
 ENV ALLOW_MISSING_RAG_CONFIG=1
 ENV SESSION_STORAGE_DIR=/mnt/workspace
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV OTEL_PYTHON_DISTRO=aws_distro
 ENV OTEL_PYTHON_CONFIGURATOR=aws_configurator
 ENV OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true

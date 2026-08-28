@@ -151,6 +151,8 @@ export interface EssDocument {
   pdf_url?: string | null;
   pdf_api_url?: string | null;
   md_url?: string | null;
+  md_workspace_path?: string | null;
+  md_local_artifacts?: string | null;
   md_viewer_url?: string | null;
   md_published?: boolean;
   title?: string;
