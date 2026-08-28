@@ -158,6 +158,16 @@ def load_config(mcp_type):
             }
         }
 
+    elif mcp_type == "text_extraction":
+        return {
+            "mcpServers": {
+                "text_extraction": {
+                    "command": "python",
+                    "args": [f"{workingDir}/mcp_server_text_extraction.py"]
+                }
+            }
+        }
+
     elif mcp_type == "websearch":
         gateway_url = get_agentcore_gateway_mcp_url("gateway-websearch", "us-east-1")
         if not gateway_url:
