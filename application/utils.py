@@ -2620,6 +2620,22 @@ def ess_md_artifacts_s3_key(file_name: str, user_id: str | None = None) -> str:
     return f"artifacts/{project}/{segment}/md/{safe_name}"
 
 
+def ess_md_runtime_workspace_s3_key(
+    file_name: str, user_id: str | None = None
+) -> str:
+    """``agentcore-sessions/{user}/artifacts/md/{stem}.md`` for AgentCore Runtime.
+
+    Runtime mounts ``agentcore-sessions/`` at ``/mnt/workspace`` and cannot read
+    ECS ``app-data/``. Publishing ESS markdown must also land here so agents can
+    ``read_file`` ``/mnt/workspace/{user}/artifacts/md/{name}.md``.
+    """
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    return f"{S3_FILES_SESSION_PREFIX}/{segment}/artifacts/md/{safe_name}"
+
+
 def ess_md_artifacts_public_url(
     file_name: str, user_id: str | None = None
 ) -> str | None:
@@ -2683,9 +2699,12 @@ def publish_ess_markdown_to_artifacts(
     *,
     file_name: str | None = None,
 ) -> dict | None:
-    """Copy markdown next to artifacts and upload to S3 for CloudFront.
+    """Copy markdown next to artifacts and upload to S3 for CloudFront + Runtime.
 
-    Target key: ``artifacts/{projectName}/{user_id}/md/{name}.md``.
+    Targets:
+    - ``artifacts/{projectName}/{user_id}/md/{name}.md`` (CloudFront)
+    - ``agentcore-sessions/{user_id}/artifacts/md/{name}.md`` (Runtime
+      ``/mnt/workspace/...`` via S3 Files)
     """
     from pathlib import Path
 
@@ -2707,17 +2726,28 @@ def publish_ess_markdown_to_artifacts(
             and os.path.getmtime(local_dest) >= src_stat.st_mtime
             and s3_bucket
         ):
-            # Local mirror already fresh — still ensure S3 object exists.
+            # Local mirror already fresh — still ensure S3 objects exist.
             s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+            runtime_key = ess_md_runtime_workspace_s3_key(name, user_id=user_id)
             public_url = ess_md_artifacts_public_url(name, user_id=user_id)
             head = _head_s3_object_quiet(s3_key)
-            if head and int(head.get("content_length") or 0) == src_stat.st_size:
+            runtime_head = _head_s3_object_quiet(runtime_key)
+            size_ok = (
+                head and int(head.get("content_length") or 0) == src_stat.st_size
+            )
+            runtime_ok = (
+                runtime_head
+                and int(runtime_head.get("content_length") or 0) == src_stat.st_size
+            )
+            if size_ok and runtime_ok:
                 return {
                     "file_name": name,
                     "local_path": local_dest,
                     "s3_key": s3_key,
+                    "runtime_s3_key": runtime_key,
                     "url": public_url,
                     "uploaded": True,
+                    "runtime_mirrored": True,
                     "skipped": True,
                     "bytes": src_stat.st_size,
                 }
@@ -2730,13 +2760,16 @@ def publish_ess_markdown_to_artifacts(
         local_dest = str(src.resolve())
 
     s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+    runtime_key = ess_md_runtime_workspace_s3_key(name, user_id=user_id)
     public_url = ess_md_artifacts_public_url(name, user_id=user_id)
     result = {
         "file_name": name,
         "local_path": local_dest,
         "s3_key": s3_key,
+        "runtime_s3_key": runtime_key,
         "url": public_url,
         "uploaded": False,
+        "runtime_mirrored": False,
     }
 
     if not s3_bucket:
@@ -2744,25 +2777,36 @@ def publish_ess_markdown_to_artifacts(
         return result
 
     try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
-        content_type = get_contents_type(name)
-        if content_type == "no info":
-            content_type = "text/markdown; charset=utf-8"
-        with open(local_dest, "rb") as f:
-            body = f.read()
-        s3_client.put_object(
-            Bucket=s3_bucket,
-            Key=s3_key,
-            Body=body,
-            ContentType=content_type,
-            CacheControl="no-cache, max-age=0, must-revalidate",
-        )
-        result["uploaded"] = True
-        result["bytes"] = len(body)
+        with _without_env_proxies():
+            s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+            content_type = get_contents_type(name)
+            if content_type == "no info":
+                content_type = "text/markdown; charset=utf-8"
+            with open(local_dest, "rb") as f:
+                body = f.read()
+            put_kwargs = {
+                "Bucket": s3_bucket,
+                "Body": body,
+                "ContentType": content_type,
+                "CacheControl": "no-cache, max-age=0, must-revalidate",
+            }
+            s3_client.put_object(Key=s3_key, **put_kwargs)
+            result["uploaded"] = True
+            result["bytes"] = len(body)
+            try:
+                s3_client.put_object(Key=runtime_key, **put_kwargs)
+                result["runtime_mirrored"] = True
+            except Exception:
+                logger.exception(
+                    "ESS md Runtime workspace mirror failed key=%s", runtime_key
+                )
         logger.info(
-            "ESS md published user=%s s3_key=%s bytes=%s url=%s",
+            "ESS md published user=%s s3_key=%s runtime_key=%s mirrored=%s "
+            "bytes=%s url=%s",
             sanitize_user_path_segment(user_id) or "default",
             s3_key,
+            runtime_key,
+            result["runtime_mirrored"],
             len(body),
             public_url,
         )
