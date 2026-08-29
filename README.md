@@ -1777,7 +1777,7 @@ cd ess-work
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install boto3 bedrock-agentcore
+pip install boto3 bedrock-agentcore cryptography
 
 # Node 설치
 cd application/web
