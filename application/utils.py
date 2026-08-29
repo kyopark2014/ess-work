@@ -37,6 +37,8 @@ SESSION_STORAGE_DIR = os.environ.get("SESSION_STORAGE_DIR") or _default_session_
 S3_FILES_SESSION_PREFIX = "agentcore-sessions"
 # ECS app-data mount → s3://{bucket}/app-data/
 S3_FILES_APP_DATA_PREFIX = "app-data/"
+# Browser/Runtime staging uploads (IAM-allowed for Runtime PutObject)
+ESS_DOCS_S3_PREFIX = "session-uploads"
 
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:
@@ -653,23 +655,50 @@ def save_ess_testcase(
     }
 
 
+def _ess_test_case_list_filenames(body: bytes | str | dict | None) -> set[str]:
+    """Filenames listed in a ``test_cases_list.json`` payload."""
+    try:
+        if body is None:
+            return set()
+        if isinstance(body, dict):
+            data = body
+        elif isinstance(body, (bytes, bytearray)):
+            data = json.loads(body.decode("utf-8"))
+        else:
+            data = json.loads(str(body))
+    except Exception:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    names: set[str] = set()
+    for doc in data.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        fn = str(doc.get("filename") or "").strip()
+        if fn:
+            names.add(fn)
+    return names
+
+
 def sync_user_ess_testcases_from_runtime_storage(
     user_id: str | None,
     *,
-    retries: int = 5,
-    initial_delay_sec: float = 0.75,
+    retries: int = 8,
+    initial_delay_sec: float = 1.0,
 ) -> dict[str, int]:
-    """Mirror AgentCore-saved test cases (``agentcore-sessions/``) into ECS ``app-data/``.
+    """Mirror AgentCore-saved test cases into ECS ``app-data/``.
 
-    Runtime ``save_testcase.py`` writes under ``/mnt/workspace/{user}/ess/test_cases``,
-    which syncs to S3 ``agentcore-sessions/{user}/ess/…``. The Web UI reads
-    ``/mnt/app-data/{user}/ess/…`` (``app-data/`` prefix). Without this mirror,
-    saved test cases exist on Runtime storage but do not appear in Test Cases UI.
+    Sources (merged; richest list wins):
+    - ``session-uploads/{user}/ess/…`` — Runtime S3 publish after save (no NFS lag)
+    - ``agentcore-sessions/{user}/ess/…`` — Runtime workspace via S3 Files
 
-    S3 Files → S3 object visibility can lag a few seconds after Runtime save, so
-    this retries with backoff when the sessions prefix is still empty. After a
-    successful S3 copy, objects are also downloaded onto the local app-data mount
-    so the UI does not wait for NFS sync.
+    The Web UI reads ``/mnt/app-data/{user}/ess/…`` (``app-data/`` prefix).
+
+    Retries must not stop on the first non-empty listing: older test cases already
+    in a source prefix make ``src_files > 0`` immediately, which previously skipped
+    waiting for newly saved files. We wait until the source view is stable across
+    attempts (or something new was copied). List sync is content-aware (filename
+    set), not LastModified-only.
     """
     import time
 
@@ -687,39 +716,71 @@ def sync_user_ess_testcases_from_runtime_storage(
         logger.warning("skip ess test_cases mirror: s3_bucket not configured")
         return {"copied": 0, "src_files": 0, "attempts": 0}
 
-    src_cases_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases/"
+    # Runtime post-save publish (S3 API, no NFS lag) + sessions NFS fallback.
+    src_prefixes = (
+        f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/test_cases/",
+        f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases/",
+    )
+    list_src_keys = (
+        f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/test_cases_list.json",
+        f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases_list.json",
+    )
     dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
-    list_src_key = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases_list.json"
     list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
     max_attempts = max(1, int(retries))
+    # Never accept "already up to date" on the first peek — new saves lag behind
+    # existing objects in the same prefix.
+    min_attempts_before_stable_exit = min(3, max_attempts)
 
-    def _list_src_objects(s3_client) -> list[dict]:
-        out: list[dict] = []
+    def _list_prefix_objects(s3_client, prefix: str) -> list[tuple[str, dict]]:
+        """Return ``(relative_name, object_meta)`` under *prefix*."""
+        out: list[tuple[str, dict]] = []
         paginator = s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=src_cases_prefix):
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents") or []:
                 src_key = obj.get("Key") or ""
                 if not src_key or src_key.endswith("/"):
                     continue
-                rel = src_key[len(src_cases_prefix) :]
-                if not rel:
+                rel = src_key[len(prefix) :]
+                if not rel or "/" in rel:
                     continue
-                out.append(obj)
+                out.append((rel, obj))
         return out
 
-    def _mirror_once(s3_client) -> dict[str, int | bool]:
+    def _mirror_once(s3_client) -> dict[str, int | bool | str]:
         copied = 0
-        src_objects = _list_src_objects(s3_client)
-        for obj in src_objects:
+        # Merge files from all sources; prefer the newest size/mtime per name.
+        best_files: dict[str, dict] = {}
+        for prefix in src_prefixes:
+            for rel, obj in _list_prefix_objects(s3_client, prefix):
+                src_key = obj.get("Key") or f"{prefix}{rel}"
+                prev = best_files.get(rel)
+                if prev is None:
+                    best_files[rel] = obj
+                    continue
+                prev_m = prev.get("LastModified")
+                cur_m = obj.get("LastModified")
+                if cur_m and (not prev_m or cur_m >= prev_m):
+                    best_files[rel] = obj
+
+        src_keys_sig = tuple(
+            sorted(
+                (rel + ":" + str(int((obj.get("Size") or 0))))
+                for rel, obj in best_files.items()
+            )
+        )
+        for rel, obj in best_files.items():
             src_key = obj.get("Key") or ""
-            rel = src_key[len(src_cases_prefix) :]
             dst_key = f"{dst_cases_prefix}{rel}"
             src_modified = obj.get("LastModified")
+            src_size = int(obj.get("Size") or 0)
             try:
                 head = s3_client.head_object(Bucket=bucket, Key=dst_key)
                 dst_modified = head.get("LastModified")
+                dst_size = int(head.get("ContentLength") or 0)
                 if (
-                    dst_modified
+                    dst_size == src_size
+                    and dst_modified
                     and src_modified
                     and dst_modified >= src_modified
                 ):
@@ -734,36 +795,64 @@ def sync_user_ess_testcases_from_runtime_storage(
             copied += 1
 
         list_found = False
-        try:
-            src_head = s3_client.head_object(Bucket=bucket, Key=list_src_key)
-            list_found = True
-            src_list_modified = src_head.get("LastModified")
+        list_etag = ""
+        src_doc_count = 0
+        best_list_body: bytes | None = None
+        best_list_names: set[str] = set()
+        best_list_etag = ""
+        for list_key in list_src_keys:
+            try:
+                src_obj = s3_client.get_object(Bucket=bucket, Key=list_key)
+                list_found = True
+                body = src_obj["Body"].read()
+                names = _ess_test_case_list_filenames(body)
+                etag = str(src_obj.get("ETag") or "").strip('"')
+                # Prefer the registry that lists the most documents.
+                if best_list_body is None or len(names) > len(best_list_names):
+                    best_list_body = body
+                    best_list_names = names
+                    best_list_etag = etag
+                elif len(names) == len(best_list_names) and body != best_list_body:
+                    # Same count — keep the one with filenames app-data lacks.
+                    if names - best_list_names:
+                        best_list_body = body
+                        best_list_names = names
+                        best_list_etag = etag
+            except s3_client.exceptions.ClientError:
+                continue
+
+        if best_list_body is not None:
+            list_etag = best_list_etag
+            src_doc_count = len(best_list_names)
             copy_list = True
             try:
-                dst_head = s3_client.head_object(Bucket=bucket, Key=list_dst_key)
-                dst_list_modified = dst_head.get("LastModified")
-                if (
-                    dst_list_modified
-                    and src_list_modified
-                    and dst_list_modified >= src_list_modified
-                ):
+                dst_obj = s3_client.get_object(Bucket=bucket, Key=list_dst_key)
+                dst_body = dst_obj["Body"].read()
+                dst_names = _ess_test_case_list_filenames(dst_body)
+                # Content-aware: copy when source has any filename app-data lacks,
+                # or bodies differ. Do not trust LastModified alone (partial mirrors
+                # can make app-data look newer while missing documents).
+                if not (best_list_names - dst_names) and best_list_body == dst_body:
                     copy_list = False
             except s3_client.exceptions.ClientError:
                 pass
             if copy_list:
-                s3_client.copy_object(
+                s3_client.put_object(
                     Bucket=bucket,
                     Key=list_dst_key,
-                    CopySource={"Bucket": bucket, "Key": list_src_key},
+                    Body=best_list_body,
+                    ContentType="application/json; charset=utf-8",
+                    CacheControl="no-cache, max-age=0, must-revalidate",
                 )
                 copied += 1
-        except s3_client.exceptions.ClientError:
-            pass
 
         return {
             "copied": copied,
-            "src_files": len(src_objects),
+            "src_files": len(best_files),
             "list_found": list_found,
+            "list_etag": list_etag,
+            "src_doc_count": src_doc_count,
+            "src_keys_sig": "|".join(src_keys_sig),
         }
 
     def _materialize_app_data_locally(s3_client) -> int:
@@ -820,11 +909,49 @@ def sync_user_ess_testcases_from_runtime_storage(
             )
         return downloaded
 
-    last: dict[str, int | bool] = {
+    def _finish(s3_client, last: dict, attempt: int) -> dict[str, int]:
+        local_n = _materialize_app_data_locally(s3_client)
+        copied = int(last.get("copied") or 0)
+        src_files = int(last.get("src_files") or 0)
+        if copied:
+            logger.info(
+                "Mirrored ess test_cases sessions→app-data user=%s "
+                "copied=%s src_files=%s docs=%s attempt=%s local=%s",
+                segment,
+                copied,
+                src_files,
+                last.get("src_doc_count"),
+                attempt,
+                local_n,
+            )
+        elif local_n:
+            logger.info(
+                "ess test_cases already mirrored; refreshed local app-data "
+                "user=%s src_files=%s docs=%s attempt=%s local=%s",
+                segment,
+                src_files,
+                last.get("src_doc_count"),
+                attempt,
+                local_n,
+            )
+        return {
+            "copied": copied,
+            "src_files": src_files,
+            "attempts": attempt,
+            "local": local_n,
+            "src_doc_count": int(last.get("src_doc_count") or 0),
+        }
+
+    last: dict[str, int | bool | str] = {
         "copied": 0,
         "src_files": 0,
         "list_found": False,
+        "list_etag": "",
+        "src_doc_count": 0,
+        "src_keys_sig": "",
     }
+    prev_sig: tuple | None = None
+    stable_hits = 0
     with _without_env_proxies():
         s3 = boto3.client("s3", region_name=region)
         for attempt in range(1, max_attempts + 1):
@@ -837,54 +964,65 @@ def sync_user_ess_testcases_from_runtime_storage(
                     max_attempts,
                     segment,
                 )
-                last = {"copied": 0, "src_files": 0, "list_found": False}
+                last = {
+                    "copied": 0,
+                    "src_files": 0,
+                    "list_found": False,
+                    "list_etag": "",
+                    "src_doc_count": 0,
+                    "src_keys_sig": "",
+                }
 
+            copied = int(last.get("copied") or 0)
             src_files = int(last.get("src_files") or 0)
             list_found = bool(last.get("list_found"))
-            copied = int(last.get("copied") or 0)
+            sig = (
+                src_files,
+                str(last.get("list_etag") or ""),
+                int(last.get("src_doc_count") or 0),
+                str(last.get("src_keys_sig") or ""),
+            )
 
-            # Success: sessions objects are visible (copied now, or already up-to-date).
+            # New bytes copied → done (list and/or case files caught up).
+            if copied > 0:
+                return _finish(s3, last, attempt)
+
             if src_files > 0 or list_found:
-                local_n = _materialize_app_data_locally(s3)
-                if copied:
-                    logger.info(
-                        "Mirrored ess test_cases sessions→app-data user=%s "
-                        "copied=%s src_files=%s attempt=%s local=%s",
-                        segment,
-                        copied,
-                        src_files,
-                        attempt,
-                        local_n,
-                    )
-                elif local_n:
-                    logger.info(
-                        "ess test_cases already mirrored; refreshed local app-data "
-                        "user=%s src_files=%s attempt=%s local=%s",
-                        segment,
-                        src_files,
-                        attempt,
-                        local_n,
-                    )
-                return {
-                    "copied": copied,
-                    "src_files": src_files,
-                    "attempts": attempt,
-                    "local": local_n,
-                }
+                if prev_sig == sig:
+                    stable_hits += 1
+                else:
+                    stable_hits = 0
+                prev_sig = sig
+                # Same sessions view twice in a row, after enough attempts that a
+                # mid-flight S3 Files sync of a new save could have appeared.
+                if (
+                    stable_hits >= 1
+                    and attempt >= min_attempts_before_stable_exit
+                ):
+                    return _finish(s3, last, attempt)
 
             if attempt >= max_attempts:
                 break
 
             delay = float(initial_delay_sec) * (2 ** (attempt - 1))
+            delay = min(delay, 8.0)
             logger.info(
-                "ess test_cases mirror: sessions prefix empty user=%s "
-                "attempt=%s/%s; retry in %.2fs (S3 Files lag)",
+                "ess test_cases mirror: waiting for sessions catch-up user=%s "
+                "attempt=%s/%s src_files=%s docs=%s copied=%s; retry in %.2fs",
                 segment,
                 attempt,
                 max_attempts,
+                src_files,
+                last.get("src_doc_count"),
+                copied,
                 delay,
             )
             time.sleep(delay)
+
+    if int(last.get("src_files") or 0) > 0 or bool(last.get("list_found")):
+        with _without_env_proxies():
+            s3 = boto3.client("s3", region_name=region)
+            return _finish(s3, last, max_attempts)
 
     logger.info(
         "ess test_cases mirror: no sessions objects user=%s after %s attempt(s)",
@@ -896,6 +1034,7 @@ def sync_user_ess_testcases_from_runtime_storage(
         "src_files": int(last.get("src_files") or 0),
         "attempts": max_attempts,
         "local": 0,
+        "src_doc_count": int(last.get("src_doc_count") or 0),
     }
 
 
@@ -2058,7 +2197,6 @@ def sync_data_source() -> dict | None:
 # ESS docs uploads (browser → S3 presigned PUT → materialize into ess/regulations/)
 # ---------------------------------------------------------------------------
 
-ESS_DOCS_S3_PREFIX = "session-uploads"
 MAX_ESS_DOC_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 

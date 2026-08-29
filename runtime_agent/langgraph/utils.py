@@ -340,11 +340,12 @@ def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
 
 
 def _mirror_testcases_to_app_data(user_id: str | None) -> dict[str, int]:
-    """Upload test cases from Runtime workspace into S3 app-data/ after save.
+    """Publish saved test cases via S3 so the ECS Web UI can mirror them.
 
-    Reads local ``/mnt/workspace/{user}/ess/test_cases/`` (just written) and
-    uploads to ``app-data/{user}/ess/…`` so the ECS Web UI can see them without
-    waiting for agentcore-sessions → app-data S3 copy on list refresh.
+    Runtime IAM Denys ``PutObject`` on ``app-data/`` and ``agentcore-sessions/``.
+    Uploads go to ``session-uploads/{user}/ess/test_cases/`` (allowed prefix);
+    ECS ``sync_user_ess_testcases_from_runtime_storage`` copies from there into
+    ``app-data/`` without waiting for S3 Files NFS lag on ``agentcore-sessions/``.
     """
     segment = sanitize_user_path_segment(user_id)
     if not segment or not os.path.isdir("/mnt/workspace"):
@@ -359,8 +360,9 @@ def _mirror_testcases_to_app_data(user_id: str | None) -> dict[str, int]:
 
     tc_dir = os.path.join(get_user_ess_dir(user_id), "test_cases")
     list_path = ess_test_cases_list_path(user_id)
-    dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
-    list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
+    # Must stay under Runtime S3 Allow prefixes (session-uploads/), not app-data/.
+    dst_cases_prefix = f"session-uploads/{segment}/ess/test_cases/"
+    list_dst_key = f"session-uploads/{segment}/ess/test_cases_list.json"
 
     copied = 0
     try:
@@ -373,7 +375,15 @@ def _mirror_testcases_to_app_data(user_id: str | None) -> dict[str, int]:
                 s3.upload_file(path, bucket, f"{dst_cases_prefix}{name}")
                 copied += 1
         if os.path.isfile(list_path):
-            s3.upload_file(list_path, bucket, list_dst_key)
+            s3.upload_file(
+                list_path,
+                bucket,
+                list_dst_key,
+                ExtraArgs={
+                    "ContentType": "application/json; charset=utf-8",
+                    "CacheControl": "no-cache, max-age=0, must-revalidate",
+                },
+            )
             copied += 1
     except Exception:
         logger.exception("ess test_cases mirror failed user=%s", segment)
@@ -381,7 +391,7 @@ def _mirror_testcases_to_app_data(user_id: str | None) -> dict[str, int]:
 
     if copied:
         logger.info(
-            "Mirrored ess test_cases workspace→app-data user=%s copied=%s",
+            "Published ess test_cases workspace→session-uploads user=%s copied=%s",
             segment,
             copied,
         )
