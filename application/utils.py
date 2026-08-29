@@ -655,6 +655,9 @@ def save_ess_testcase(
 
 def sync_user_ess_testcases_from_runtime_storage(
     user_id: str | None,
+    *,
+    retries: int = 5,
+    initial_delay_sec: float = 0.75,
 ) -> dict[str, int]:
     """Mirror AgentCore-saved test cases (``agentcore-sessions/``) into ECS ``app-data/``.
 
@@ -662,10 +665,17 @@ def sync_user_ess_testcases_from_runtime_storage(
     which syncs to S3 ``agentcore-sessions/{user}/ess/…``. The Web UI reads
     ``/mnt/app-data/{user}/ess/…`` (``app-data/`` prefix). Without this mirror,
     saved test cases exist on Runtime storage but do not appear in Test Cases UI.
+
+    S3 Files → S3 object visibility can lag a few seconds after Runtime save, so
+    this retries with backoff when the sessions prefix is still empty. After a
+    successful S3 copy, objects are also downloaded onto the local app-data mount
+    so the UI does not wait for NFS sync.
     """
+    import time
+
     segment = sanitize_user_path_segment(user_id)
     if not segment:
-        return {"copied": 0}
+        return {"copied": 0, "src_files": 0, "attempts": 0}
 
     try:
         cfg = load_config()
@@ -675,17 +685,17 @@ def sync_user_ess_testcases_from_runtime_storage(
     region = (cfg.get("region") if isinstance(cfg, dict) else None) or bedrock_region
     if not bucket:
         logger.warning("skip ess test_cases mirror: s3_bucket not configured")
-        return {"copied": 0}
+        return {"copied": 0, "src_files": 0, "attempts": 0}
 
     src_cases_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases/"
     dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
     list_src_key = f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases_list.json"
     list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
+    max_attempts = max(1, int(retries))
 
-    copied = 0
-    with _without_env_proxies():
-        s3 = boto3.client("s3", region_name=region)
-        paginator = s3.get_paginator("list_objects_v2")
+    def _list_src_objects(s3_client) -> list[dict]:
+        out: list[dict] = []
+        paginator = s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=src_cases_prefix):
             for obj in page.get("Contents") or []:
                 src_key = obj.get("Key") or ""
@@ -694,32 +704,43 @@ def sync_user_ess_testcases_from_runtime_storage(
                 rel = src_key[len(src_cases_prefix) :]
                 if not rel:
                     continue
-                dst_key = f"{dst_cases_prefix}{rel}"
-                src_modified = obj.get("LastModified")
-                try:
-                    head = s3.head_object(Bucket=bucket, Key=dst_key)
-                    dst_modified = head.get("LastModified")
-                    if (
-                        dst_modified
-                        and src_modified
-                        and dst_modified >= src_modified
-                    ):
-                        continue
-                except s3.exceptions.ClientError:
-                    pass
-                s3.copy_object(
-                    Bucket=bucket,
-                    Key=dst_key,
-                    CopySource={"Bucket": bucket, "Key": src_key},
-                )
-                copied += 1
+                out.append(obj)
+        return out
 
+    def _mirror_once(s3_client) -> dict[str, int | bool]:
+        copied = 0
+        src_objects = _list_src_objects(s3_client)
+        for obj in src_objects:
+            src_key = obj.get("Key") or ""
+            rel = src_key[len(src_cases_prefix) :]
+            dst_key = f"{dst_cases_prefix}{rel}"
+            src_modified = obj.get("LastModified")
+            try:
+                head = s3_client.head_object(Bucket=bucket, Key=dst_key)
+                dst_modified = head.get("LastModified")
+                if (
+                    dst_modified
+                    and src_modified
+                    and dst_modified >= src_modified
+                ):
+                    continue
+            except s3_client.exceptions.ClientError:
+                pass
+            s3_client.copy_object(
+                Bucket=bucket,
+                Key=dst_key,
+                CopySource={"Bucket": bucket, "Key": src_key},
+            )
+            copied += 1
+
+        list_found = False
         try:
-            src_head = s3.head_object(Bucket=bucket, Key=list_src_key)
+            src_head = s3_client.head_object(Bucket=bucket, Key=list_src_key)
+            list_found = True
             src_list_modified = src_head.get("LastModified")
             copy_list = True
             try:
-                dst_head = s3.head_object(Bucket=bucket, Key=list_dst_key)
+                dst_head = s3_client.head_object(Bucket=bucket, Key=list_dst_key)
                 dst_list_modified = dst_head.get("LastModified")
                 if (
                     dst_list_modified
@@ -727,25 +748,155 @@ def sync_user_ess_testcases_from_runtime_storage(
                     and dst_list_modified >= src_list_modified
                 ):
                     copy_list = False
-            except s3.exceptions.ClientError:
+            except s3_client.exceptions.ClientError:
                 pass
             if copy_list:
-                s3.copy_object(
+                s3_client.copy_object(
                     Bucket=bucket,
                     Key=list_dst_key,
                     CopySource={"Bucket": bucket, "Key": list_src_key},
                 )
                 copied += 1
-        except s3.exceptions.ClientError:
+        except s3_client.exceptions.ClientError:
             pass
 
-    if copied:
-        logger.info(
-            "Mirrored ess test_cases sessions→app-data user=%s copied=%s",
-            segment,
-            copied,
-        )
-    return {"copied": copied}
+        return {
+            "copied": copied,
+            "src_files": len(src_objects),
+            "list_found": list_found,
+        }
+
+    def _materialize_app_data_locally(s3_client) -> int:
+        """Download mirrored app-data objects onto the ECS NFS mount for immediate UI reads."""
+        try:
+            ess_dir = ensure_user_ess_dir(user_id)
+        except Exception:
+            logger.exception(
+                "ess test_cases local materialize: ensure_user_ess_dir failed user=%s",
+                segment,
+            )
+            return 0
+
+        tc_dir = os.path.join(ess_dir, "test_cases")
+        os.makedirs(tc_dir, exist_ok=True)
+        downloaded = 0
+
+        try:
+            local_list = os.path.join(ess_dir, "test_cases_list.json")
+            s3_client.download_file(bucket, list_dst_key, local_list)
+            downloaded += 1
+        except Exception:
+            logger.debug(
+                "ess test_cases local materialize: list not ready key=%s",
+                list_dst_key,
+                exc_info=True,
+            )
+
+        try:
+            paginator = s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=dst_cases_prefix):
+                for obj in page.get("Contents") or []:
+                    key = obj.get("Key") or ""
+                    if not key or key.endswith("/"):
+                        continue
+                    name = key[len(dst_cases_prefix) :]
+                    if not name or "/" in name:
+                        continue
+                    dest = os.path.join(tc_dir, name)
+                    try:
+                        s3_client.download_file(bucket, key, dest)
+                        downloaded += 1
+                    except Exception:
+                        logger.debug(
+                            "ess test_cases local materialize failed key=%s",
+                            key,
+                            exc_info=True,
+                        )
+        except Exception:
+            logger.debug(
+                "ess test_cases local materialize list failed prefix=%s",
+                dst_cases_prefix,
+                exc_info=True,
+            )
+        return downloaded
+
+    last: dict[str, int | bool] = {
+        "copied": 0,
+        "src_files": 0,
+        "list_found": False,
+    }
+    with _without_env_proxies():
+        s3 = boto3.client("s3", region_name=region)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                last = _mirror_once(s3)
+            except Exception:
+                logger.exception(
+                    "ess test_cases mirror attempt %s/%s failed user=%s",
+                    attempt,
+                    max_attempts,
+                    segment,
+                )
+                last = {"copied": 0, "src_files": 0, "list_found": False}
+
+            src_files = int(last.get("src_files") or 0)
+            list_found = bool(last.get("list_found"))
+            copied = int(last.get("copied") or 0)
+
+            # Success: sessions objects are visible (copied now, or already up-to-date).
+            if src_files > 0 or list_found:
+                local_n = _materialize_app_data_locally(s3)
+                if copied:
+                    logger.info(
+                        "Mirrored ess test_cases sessions→app-data user=%s "
+                        "copied=%s src_files=%s attempt=%s local=%s",
+                        segment,
+                        copied,
+                        src_files,
+                        attempt,
+                        local_n,
+                    )
+                elif local_n:
+                    logger.info(
+                        "ess test_cases already mirrored; refreshed local app-data "
+                        "user=%s src_files=%s attempt=%s local=%s",
+                        segment,
+                        src_files,
+                        attempt,
+                        local_n,
+                    )
+                return {
+                    "copied": copied,
+                    "src_files": src_files,
+                    "attempts": attempt,
+                    "local": local_n,
+                }
+
+            if attempt >= max_attempts:
+                break
+
+            delay = float(initial_delay_sec) * (2 ** (attempt - 1))
+            logger.info(
+                "ess test_cases mirror: sessions prefix empty user=%s "
+                "attempt=%s/%s; retry in %.2fs (S3 Files lag)",
+                segment,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+
+    logger.info(
+        "ess test_cases mirror: no sessions objects user=%s after %s attempt(s)",
+        segment,
+        max_attempts,
+    )
+    return {
+        "copied": int(last.get("copied") or 0),
+        "src_files": int(last.get("src_files") or 0),
+        "attempts": max_attempts,
+        "local": 0,
+    }
 
 
 def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:

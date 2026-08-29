@@ -404,7 +404,17 @@ def get_ess_test_case_list(request: Request) -> dict:
     user_id = require_user_id(request)
     utils.ensure_user_ess_dir(user_id)
     try:
-        utils.sync_user_ess_testcases_from_runtime_storage(user_id)
+        mirror = utils.sync_user_ess_testcases_from_runtime_storage(user_id)
+        if mirror.get("copied") or mirror.get("local") or mirror.get("src_files"):
+            logger.info(
+                "ess test-case-list mirror user=%s copied=%s src_files=%s "
+                "attempts=%s local=%s",
+                user_id,
+                mirror.get("copied"),
+                mirror.get("src_files"),
+                mirror.get("attempts"),
+                mirror.get("local"),
+            )
     except Exception:
         logger.exception(
             "ess test_cases mirror failed user=%s; serving app-data list",
