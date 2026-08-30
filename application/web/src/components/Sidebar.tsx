@@ -46,6 +46,9 @@ const ESS_OPTIONS = [
 ] as const;
 const KNOWLEDGE_ACTIONS = ["Sync", "Graph"] as const;
 
+/** Temporary: hide Knowledge under Settings (re-enable when ready). */
+const SHOW_KNOWLEDGE_IN_SETTINGS = false;
+
 function themeToLabel(theme: Theme): string {
   return theme === "light" ? "Light" : "Dark";
 }
@@ -544,18 +547,20 @@ export function Sidebar({
                 <McpIcon className="sidebar-icon" />
                 <span>MCP ({mcpServers.length})</span>
               </button>
-              <button
-                ref={knowledgeBtnRef}
-                type="button"
-                className={`sidebar-menu-btn${drawer === "knowledge" || knowledgeSyncBusy ? " is-active" : ""}`}
-                aria-expanded={drawer === "knowledge"}
-                aria-haspopup="dialog"
-                title={knowledgeSyncMessage ?? "Knowledge"}
-                onClick={() => toggleDrawer("knowledge")}
-              >
-                <KnowledgeGraphIcon className="sidebar-icon" />
-                <span>{knowledgeSyncBusy ? "Knowledge (Syncing…)" : "Knowledge"}</span>
-              </button>
+              {SHOW_KNOWLEDGE_IN_SETTINGS && (
+                <button
+                  ref={knowledgeBtnRef}
+                  type="button"
+                  className={`sidebar-menu-btn${drawer === "knowledge" || knowledgeSyncBusy ? " is-active" : ""}`}
+                  aria-expanded={drawer === "knowledge"}
+                  aria-haspopup="dialog"
+                  title={knowledgeSyncMessage ?? "Knowledge"}
+                  onClick={() => toggleDrawer("knowledge")}
+                >
+                  <KnowledgeGraphIcon className="sidebar-icon" />
+                  <span>{knowledgeSyncBusy ? "Knowledge (Syncing…)" : "Knowledge"}</span>
+                </button>
+              )}
               <label className="sidebar-menu-btn settings-toggle">
                 <GuardrailIcon className="sidebar-icon" />
                 <span>Guardrail</span>
@@ -663,7 +668,7 @@ export function Sidebar({
           onClose={handleDrawerClose}
         />
       )}
-      {drawer === "knowledge" && (
+      {SHOW_KNOWLEDGE_IN_SETTINGS && drawer === "knowledge" && (
         <ConfigDrawer
           title="Knowledge"
           options={[

@@ -683,7 +683,7 @@ def _ess_test_case_list_filenames(body: bytes | str | dict | None) -> set[str]:
 def sync_user_ess_testcases_from_runtime_storage(
     user_id: str | None,
     *,
-    retries: int = 8,
+    retries: int = 5,
     initial_delay_sec: float = 1.0,
 ) -> dict[str, int]:
     """Mirror AgentCore-saved test cases into ECS ``app-data/``.
@@ -1004,8 +1004,10 @@ def sync_user_ess_testcases_from_runtime_storage(
             if attempt >= max_attempts:
                 break
 
-            delay = float(initial_delay_sec) * (2 ** (attempt - 1))
-            delay = min(delay, 8.0)
+            # One backoff cycle only: 1s → 2s → 4s → 8s (no repeated 8s waits).
+            _delays = (1.0, 2.0, 4.0, 8.0)
+            delay = _delays[attempt - 1] if attempt - 1 < len(_delays) else _delays[-1]
+            delay *= float(initial_delay_sec)
             logger.info(
                 "ess test_cases mirror: waiting for sessions catch-up user=%s "
                 "attempt=%s/%s src_files=%s docs=%s copied=%s; retry in %.2fs",
