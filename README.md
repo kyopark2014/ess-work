@@ -2515,7 +2515,7 @@ https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#dashboar
 
 생성된 Dashboard는 아래와 같습니다.
 
-<img width="1000" alt="image" src="https://github.com/user-attachments/assets/88390975-6131-4c6a-9f17-5f01bc3400f4" />
+<img width="1000" alt="image" src="https://github.com/user-attachments/assets/ee1da9cf-0eab-4d1b-a67d-4c186971613c" />
 
 
 ## 실행 결과
