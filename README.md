@@ -1795,13 +1795,9 @@ python -c "import boto3, botocore; print(boto3.__version__, botocore.__version__
 python installer.py
 ```
 
-이미지가 이미 ECR에 있으면 Docker 빌드를 건너뛸 수 있습니다.
-
-```bash
-python installer.py --skip-docker-build
-```
-
 8. 설치가 완료되면 CloudFront로 접속하여 동작을 확인합니다. Agent를 선택한 후에 적절한 MCP tool을 선택하여 원하는 작업을 수행합니다.
+
+<img width="800" alt="noname" src="https://github.com/user-attachments/assets/14dfae1a-5430-43f7-8558-66c93f9cd81e" />
 
 
 ### 삭제하기 
