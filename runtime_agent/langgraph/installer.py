@@ -18,11 +18,18 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, "config.json")
+RUNTIME_TYPE = "langgraph"
 
 
 def runtime_build_context() -> str:
     """Ess-work repo root (Dockerfile copies runtime_agent/langgraph + graph/lib)."""
     return os.path.dirname(os.path.dirname(script_dir))
+
+
+def ecr_repository_name(config: dict) -> str:
+    """ECR repo name must not depend on the shell cwd."""
+    project_name = config.get("projectName", "agent")
+    return f"{project_name}_{RUNTIME_TYPE}"
 
 
 def load_config():
@@ -1517,11 +1524,8 @@ def push_to_ecr():
             return False
         
         build_context = runtime_build_context()
-        current_folder_name = os.path.basename(script_dir)
+        ecr_repository = ecr_repository_name(config)
         print(f"BUILD_CONTEXT: {build_context}")
-        print(f"CURRENT_FOLDER_NAME: {current_folder_name}")
-
-        ecr_repository = f"{project_name}_{current_folder_name}"
         print(f"ECR_REPOSITORY: {ecr_repository}")
         
         # Construct image tag and ECR URI
@@ -1609,8 +1613,7 @@ def get_latest_image_tag(config):
     try:
         aws_region = config['region']
         project_name = config.get('projectName')
-        current_folder_name = os.path.basename(os.getcwd())
-        repository_name = f"{project_name}_{current_folder_name}"
+        repository_name = ecr_repository_name(config)
 
         ecr_client = boto3.client('ecr', region_name=aws_region)
         images: list = []
@@ -1978,9 +1981,7 @@ def create_agent_runtime():
         aws_region = config['region']
         project_name = config.get('projectName')
         
-        # Get current folder name
-        current_folder_name = os.path.basename(os.getcwd())
-        repository_name = f"{project_name}_{current_folder_name}"
+        repository_name = ecr_repository_name(config)
         runtime_name = agent_runtime_name(project_name)
         
         print(f"Repository name: {repository_name}")
