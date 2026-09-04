@@ -41,6 +41,33 @@ function fileNameFromRef(ref: string): string {
   }
 }
 
+/** Map an attachment ref to a browser-openable URL (new tab), if possible. */
+function resolveAttachmentOpenUrl(ref: string): string | null {
+  const trimmed = (ref || "").trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/api/")) return trimmed;
+
+  const name = fileNameFromRef(trimmed);
+  if (!name) return null;
+  const lower = name.toLowerCase();
+
+  // ESS document viewers (workspace / local paths still open via API).
+  if (lower.endsWith(".md")) {
+    return `/api/ess/documents/${encodeURIComponent(name)}/markdown`;
+  }
+  if (lower.endsWith(".json")) {
+    return `/api/ess/documents/${encodeURIComponent(name)}/json`;
+  }
+  if (lower.endsWith(".xlsx")) {
+    return `/api/ess/documents/${encodeURIComponent(name)}/xlsx`;
+  }
+  if (lower.endsWith(".pdf")) {
+    return `/api/ess/documents/${encodeURIComponent(name)}/pdf`;
+  }
+  return null;
+}
+
 function splitAttachmentRefs(refs: string[]): {
   imageUrls: string[];
   filePaths: string[];
@@ -61,11 +88,29 @@ function AttachmentMedia({ refs }: { refs: string[] }) {
     <>
       {filePaths.length > 0 && (
         <div className="message-loaded-files" aria-label="첨부 파일">
-          {filePaths.map((path) => (
-            <div key={path} className="message-loaded-file" title={path}>
-              <span className="message-loaded-file-name">{fileNameFromRef(path)}</span>
-            </div>
-          ))}
+          {filePaths.map((path) => {
+            const openUrl = resolveAttachmentOpenUrl(path);
+            const label = fileNameFromRef(path);
+            if (openUrl) {
+              return (
+                <a
+                  key={path}
+                  className="message-loaded-file message-loaded-file-link"
+                  href={openUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`${path}\n클릭하여 새 탭에서 열기`}
+                >
+                  <span className="message-loaded-file-name">{label}</span>
+                </a>
+              );
+            }
+            return (
+              <div key={path} className="message-loaded-file" title={path}>
+                <span className="message-loaded-file-name">{label}</span>
+              </div>
+            );
+          })}
         </div>
       )}
       {imageUrls.length > 0 && (
