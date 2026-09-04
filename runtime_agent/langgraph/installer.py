@@ -19,6 +19,12 @@ from botocore.exceptions import ClientError, NoCredentialsError
 script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, "config.json")
 
+
+def runtime_build_context() -> str:
+    """Ess-work repo root (Dockerfile copies runtime_agent/langgraph + graph/lib)."""
+    return os.path.dirname(os.path.dirname(script_dir))
+
+
 def load_config():
     """Load config.json file and merge S3 Files settings from application config."""
     try:
@@ -1416,6 +1422,7 @@ def _host_is_arm64() -> bool:
 def build_and_push_arm64_image(
     local_tag: str,
     ecr_uri: str,
+    build_context: str,
     build_args: dict[str, str] | None = None,
 ) -> bool:
     """Build an ARM64 image and push it to ECR (native build on ARM64 hosts only)."""
@@ -1425,13 +1432,19 @@ def build_and_push_arm64_image(
         print("  Build on an ARM64 EC2 instance (e.g. t4g, m7g) and retry.", flush=True)
         return False
 
+    dockerfile = os.path.join(build_context, "runtime_agent", "langgraph", "Dockerfile")
     build_command = [
-        "docker", "build",
-        "--platform", "linux/arm64",
+        "docker",
+        "build",
+        "--platform",
+        "linux/arm64",
         "--provenance=false",
         "--sbom=false",
-        "-t", local_tag,
-        ".",
+        "-f",
+        dockerfile,
+        "-t",
+        local_tag,
+        build_context,
     ]
     if build_args:
         for key, value in build_args.items():
@@ -1503,11 +1516,11 @@ def push_to_ecr():
             print("Required: accountId, region, projectName")
             return False
         
-        # Get current folder name
-        current_folder_name = os.path.basename(os.getcwd())
+        build_context = runtime_build_context()
+        current_folder_name = os.path.basename(script_dir)
+        print(f"BUILD_CONTEXT: {build_context}")
         print(f"CURRENT_FOLDER_NAME: {current_folder_name}")
-        
-        # Construct ECR repository name
+
         ecr_repository = f"{project_name}_{current_folder_name}"
         print(f"ECR_REPOSITORY: {ecr_repository}")
         
@@ -1554,6 +1567,7 @@ def push_to_ecr():
         if not build_and_push_arm64_image(
             local_tag,
             ecr_uri,
+            build_context,
             build_args={"OTEL_SERVICE_NAME": otel_service_name},
         ):
             return False

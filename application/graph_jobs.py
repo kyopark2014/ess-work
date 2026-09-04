@@ -269,6 +269,37 @@ def ensure_graph_job(user_id: str, *, force: bool = False) -> dict[str, Any]:
     return get_job_status(user_id)
 
 
+def _build_graph_embeddings_and_mirror(user_id: str) -> None:
+    """Build node embeddings after pipeline, then mirror graph (incl. embeddings) to Runtime."""
+    from application import utils
+    from application.graph_embeddings import maybe_build_node_embeddings
+
+    graph_json = Path(utils.get_user_graph_dir(user_id)) / "out" / "graph.json"
+    if graph_json.is_file():
+        try:
+            emb_path = maybe_build_node_embeddings(graph_json)
+            if emb_path:
+                logger.info(
+                    "Graph node embeddings built user=%s path=%s", user_id, emb_path
+                )
+        except Exception:
+            logger.exception("Graph node embeddings build failed user=%s", user_id)
+
+    try:
+        result = utils.sync_user_graph_to_runtime_storage(user_id)
+        logger.info(
+            "Graph→runtime mirror user=%s uploaded=%s deleted=%s",
+            user_id,
+            result.get("uploaded", 0),
+            result.get("deleted", 0),
+        )
+    except Exception:
+        logger.exception(
+            "Graph→runtime mirror failed for user=%s (pipeline still ready)",
+            user_id,
+        )
+
+
 def _run_pipeline(user_id: str, force: bool = False) -> None:
     with _lock:
         state = _get_or_create(user_id)
@@ -320,15 +351,7 @@ def _run_pipeline(user_id: str, force: bool = False) -> None:
             state.updated_at = now
             _running_users.discard(user_id)
         logger.info("Graph pipeline ready for user=%s", user_id)
-        try:
-            from application import utils
-
-            utils.sync_user_graph_to_runtime_storage(user_id)
-        except Exception:
-            logger.exception(
-                "Graph→runtime mirror failed for user=%s (pipeline still ready)",
-                user_id,
-            )
+        _build_graph_embeddings_and_mirror(user_id)
     except Exception as exc:
         with _lock:
             state = _get_or_create(user_id)
