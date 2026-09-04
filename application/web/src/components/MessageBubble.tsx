@@ -52,6 +52,11 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
   if (!name) return null;
   const lower = name.toLowerCase();
 
+  // Load-files uploads use the generic viewer (not ESS document APIs).
+  if (/\/upload\//i.test(trimmed)) {
+    return `/api/files/view/${encodeURIComponent(name)}`;
+  }
+
   // ESS document viewers (workspace / local paths still open via API).
   if (lower.endsWith(".md")) {
     return `/api/ess/documents/${encodeURIComponent(name)}/markdown`;
@@ -65,8 +70,9 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
   if (lower.endsWith(".pdf")) {
     return `/api/ess/documents/${encodeURIComponent(name)}/pdf`;
   }
-  return null;
+  return `/api/files/view/${encodeURIComponent(name)}`;
 }
+
 
 function splitAttachmentRefs(refs: string[]): {
   imageUrls: string[];

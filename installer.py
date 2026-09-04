@@ -9028,6 +9028,11 @@ def main():
         help="Skip local Docker build/push and reuse the latest image tag in ECR.",
     )
     parser.add_argument(
+        "--skip-agent-runtime",
+        action="store_true",
+        help="Skip AgentCore Runtime rebuild (Web UI / ECS image only).",
+    )
+    parser.add_argument(
         "--install-agent-runtime",
         metavar="RUNTIME_TYPE",
         nargs="?",
@@ -9209,7 +9214,24 @@ def main():
 
         # LangGraph agent runtime (MCP servers run in-process inside this container;
         # separate runtime_mcp installers are not used in this repository).
-        if install_agent_runtime("langgraph"):
+        if args.skip_agent_runtime:
+            logger.warning("Skipping Agent Runtime rebuild (--skip-agent-runtime)")
+            app_environment = _merge_runtime_agent_settings(app_environment)
+            if write_application_config(app_environment):
+                logger.info(
+                    "✓ Kept existing agent_runtime_arn in application config for ECS: "
+                    f"{app_environment.get('agent_runtime_arn', '')}"
+                )
+            # Role may already exist from a prior install — apply session FS policy.
+            if s3_files_info:
+                prepare_s3files_for_runtime(s3_files_info)
+            ecs_roles = create_ecs_roles()
+            logger.info("ECS task AgentCore IAM policy refreshed for installed runtime...")
+            if s3_files_app_data_info:
+                prepare_s3files_for_ecs(
+                    vpc_info, s3_files_app_data_info, ecs_task_role_name
+                )
+        elif install_agent_runtime("langgraph"):
             logger.info("Langgraph agent runtime installed...")
             app_environment = _merge_runtime_agent_settings(app_environment)
             if write_application_config(app_environment):
