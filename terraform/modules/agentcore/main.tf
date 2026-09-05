@@ -32,7 +32,7 @@ locals {
   # installer/CDK parity: {project_name}_langgraph
   ecr_repo    = "${var.project_name}_langgraph"
   runtime_dir = "${var.repo_root}/runtime_agent/langgraph"
-  # Include app source so Runtime container_uri changes when code is fixed.
+  # Dockerfile COPYs from repo root (runtime_agent/langgraph + graph/lib).
   image_tag = "tf-${substr(sha256(join("", [
     filesha256("${local.runtime_dir}/Dockerfile"),
     filesha256("${local.runtime_dir}/langgraph_agent.py"),
@@ -599,11 +599,13 @@ resource "null_resource" "docker_build" {
       REGION="${local.region}"
       REPO="${aws_ecr_repository.runtime.repository_url}"
       TAG="${local.image_tag}"
-      CONTEXT="${local.runtime_dir}"
+      # Match installer: build context is repo root (Dockerfile COPY paths).
+      CONTEXT="${var.repo_root}"
+      DOCKERFILE="${local.runtime_dir}/Dockerfile"
       aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${local.account_id}.dkr.ecr.${local.region}.amazonaws.com"
       docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
         -t "$REPO:$TAG" \
-        -f "$CONTEXT/Dockerfile" "$CONTEXT" --push
+        -f "$DOCKERFILE" "$CONTEXT" --push
     EOT
   }
 
