@@ -28,7 +28,7 @@ from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AIMessageChunk
 from langchain.mcp import MCPAdapter
-from tavily_tool_interceptor import wrap_tavily_mcp_tools
+from tool_interceptor import wrap_mcp_tools
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -2355,21 +2355,27 @@ async def create_agent(
 
     if server_params:
         try:
-            mcp_tools = []
             max_retries = 3 if has_agentcore else 1
             if has_agentcore:
                 logger.info(
                     "Loading MCP tools from Bedrock AgentCore (cold start may take 1-2 minutes)..."
                 )
             for server_name, params in server_params.items():
-                loaded = False
                 for attempt in range(1, max_retries + 1):
                     try:
                         async with MCPAdapter({"mcpServers": {server_name: params}}) as adapter:
                             logger.info(f"MCP client initialized for server: {server_name}")
                             _tools = await adapter.list_tools()
-                        mcp_tools.extend(_tools)
-                        loaded = True
+                        # Map tools to this server inside the loop. Using the
+                        # post-loop `server_name` would label every tool as the
+                        # last MCP server (e.g. recall_memory → web_fetch).
+                        for tool in wrap_mcp_tools(_tools):
+                            logger.info(f"mcp_tool: {tool.name} (from {server_name})")
+                            if tool.name not in [t.name for t in tools]:
+                                tools.append(tool)
+                                mcp_tool_servers[tool.name] = server_name
+                            else:
+                                logger.info(f"mcp_tool of {tool.name} already in tools")
                         break
                     except Exception as e:
                         if attempt >= max_retries:
@@ -2385,16 +2391,6 @@ async def create_agent(
                             wait_seconds,
                         )
                         await asyncio.sleep(wait_seconds)
-
-            mcp_tools = wrap_tavily_mcp_tools(mcp_tools)
-
-            for tool in mcp_tools:
-                logger.info(f"mcp_tool: {tool.name} (from {server_name})")
-                if tool.name not in [t.name for t in tools]:
-                    tools.append(tool)
-                    mcp_tool_servers[tool.name] = server_name
-                else:
-                    logger.info(f"mcp_tool of {tool.name} already in tools")
         except Exception as e:
             logger.error(f"Error creating MCP client or getting tools: {e}")
             if getattr(e, "__cause__", None):

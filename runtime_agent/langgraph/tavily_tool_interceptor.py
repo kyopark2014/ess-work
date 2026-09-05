@@ -62,40 +62,15 @@ def sanitize_tavily_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str,
     return sanitized
 
 
+# Back-compat: wrapping moved to tool_interceptor.wrap_mcp_tools.
 def wrap_tavily_mcp_tools(tools: list) -> list:
-    """Wrap MCP tools so Tavily country args are normalized before invoke.
+    from tool_interceptor import wrap_mcp_tools
 
-    Replaces langchain_mcp_adapters tool_interceptors (removed with MCPAdapter).
-    """
-    wrapped: list = []
-    for tool in tools:
-        name = getattr(tool, "name", "") or ""
-        if not name.startswith("tavily_"):
-            wrapped.append(tool)
-            continue
-
-        original_ainvoke = tool.ainvoke
-        original_invoke = tool.invoke
-
-        async def ainvoke(input, config=None, *, _name=name, _orig=original_ainvoke, **kwargs):
-            if isinstance(input, dict):
-                input = sanitize_tavily_tool_args(_name, input)
-            return await _orig(input, config=config, **kwargs)
-
-        def invoke(input, config=None, *, _name=name, _orig=original_invoke, **kwargs):
-            if isinstance(input, dict):
-                input = sanitize_tavily_tool_args(_name, input)
-            return _orig(input, config=config, **kwargs)
-
-        tool.ainvoke = ainvoke
-        tool.invoke = invoke
-        wrapped.append(tool)
-    return wrapped
+    return wrap_mcp_tools(tools)
 
 
-# Back-compat alias for call sites that still import the old name.
 class TavilyToolCallInterceptor:
-    """Deprecated: use wrap_tavily_mcp_tools after MCPAdapter.list_tools()."""
+    """Deprecated: use tool_interceptor.wrap_mcp_tools after MCPAdapter.list_tools()."""
 
     def wrap_tools(self, tools: list) -> list:
         return wrap_tavily_mcp_tools(tools)
