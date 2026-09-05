@@ -1,0 +1,13 @@
+project_name = "ess-work"
+region       = "us-west-2"
+
+# Cognito admin (username defaults to "admin")
+cognito_admin_password = "YourPass1"
+
+# Shared AgentCore Web Search Gateway name (matches installer.py / deployed config)
+# agentcore_websearch_gateway_name = "gateway-websearch"
+
+# Set true and supply URIs to skip ARM64 docker build during apply
+# skip_docker_build  = true
+# runtime_image_uri  = "123456789012.dkr.ecr.us-west-2.amazonaws.com/ess-work_langgraph:latest"
+# web_image_uri      = "123456789012.dkr.ecr.us-west-2.amazonaws.com/ecr-for-ess-work:latest"
