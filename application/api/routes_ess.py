@@ -6,7 +6,7 @@ import html
 import json
 import logging
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -502,6 +502,7 @@ def get_ess_document_markdown_viewer(
     filename: str,
     request: Request,
     kind: str = Query("regulation"),
+    download: int = Query(0),
 ):
     """Markdown viewer HTML for a new browser tab."""
     user_id = require_user_id(request)
@@ -533,6 +534,14 @@ def get_ess_document_markdown_viewer(
                     status_code=404, detail=f"Markdown not found: {md_name}"
                 )
 
+    if bool(download):
+        return FileResponse(
+            md_path,
+            media_type="text/markdown; charset=utf-8",
+            filename=md_name,
+            headers={"Content-Disposition": f'attachment; filename="{md_name}"'},
+        )
+
     # Ensure CloudFront copy exists (best-effort).
     published = utils.publish_ess_markdown_to_artifacts(
         md_path, user_id=user_id, file_name=md_name
@@ -544,16 +553,26 @@ def get_ess_document_markdown_viewer(
     except UnicodeDecodeError:
         text = md_path.read_text(encoding="utf-8", errors="replace")
 
-    title = html.escape(md_name)
-    raw_link = (
-        f'<a class="raw" href="{html.escape(raw_url)}" target="_blank" rel="noopener">Raw (CloudFront)</a>'
-        if raw_url
-        else ""
+    download_href = (
+        f"/api/ess/documents/{quote(md_name)}/markdown"
+        f"?kind={quote(kind)}&download=1"
     )
+    actions = [
+        f'<a class="raw" href="{html.escape(download_href, quote=True)}">Download</a>',
+    ]
+    if raw_url:
+        actions.append(
+            f'<a class="raw" href="{html.escape(raw_url, quote=True)}" '
+            f'target="_blank" rel="noopener">Raw (CloudFront)</a>'
+        )
     from application.viewer_html import build_markdown_viewer_page
 
     page = build_markdown_viewer_page(
-        md_name, text, topbar_right_html=raw_link
+        md_name,
+        text,
+        topbar_right_html='<span style="display:flex;gap:14px;align-items:center">'
+        + "".join(actions)
+        + "</span>",
     )
     return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
 

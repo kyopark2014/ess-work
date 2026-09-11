@@ -45,12 +45,18 @@ function fileNameFromRef(ref: string): string {
 function resolveAttachmentOpenUrl(ref: string): string | null {
   const trimmed = (ref || "").trim();
   if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith("/api/")) return trimmed;
 
   const name = fileNameFromRef(trimmed);
   if (!name) return null;
   const lower = name.toLowerCase();
+
+  // CSV → in-app table viewer (Load-files /api/files/view).
+  if (lower.endsWith(".csv") && (!/^https?:\/\//i.test(trimmed) || /\/upload\//i.test(trimmed))) {
+    return `/api/files/view/${encodeURIComponent(name)}`;
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/api/")) return trimmed;
 
   // Load-files uploads use the generic viewer (not ESS document APIs).
   if (/\/upload\//i.test(trimmed)) {
@@ -71,6 +77,22 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
     return `/api/ess/documents/${encodeURIComponent(name)}/pdf`;
   }
   return `/api/files/view/${encodeURIComponent(name)}`;
+}
+
+/** Rewrite chat markdown links to in-app viewers when possible. */
+function resolveChatHref(href: string | undefined): string | undefined {
+  if (!href) return href;
+  try {
+    const url = new URL(href, window.location.origin);
+    const name = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const lower = name.toLowerCase();
+    if (lower.endsWith(".csv") && (url.pathname.includes("/upload/") || href.startsWith("/"))) {
+      return `/api/files/view/${encodeURIComponent(name)}`;
+    }
+  } catch {
+    /* keep original */
+  }
+  return href;
 }
 
 
@@ -182,11 +204,14 @@ function MarkdownText({ content }: { content: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        a: ({ href, children, ...props }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-            {children}
-          </a>
-        ),
+        a: ({ href, children, ...props }) => {
+          const openHref = resolveChatHref(href);
+          return (
+            <a href={openHref} target="_blank" rel="noopener noreferrer" {...props}>
+              {children}
+            </a>
+          );
+        },
       }}
     >
       {content}
