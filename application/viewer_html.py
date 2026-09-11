@@ -1,17 +1,68 @@
-"""CSP-safe HTML helpers for markdown/text/csv viewers (no inline scripts, no CDN)."""
+"""CSP-safe HTML helpers for markdown/json/csv viewers (no inline scripts, no CDN)."""
 
 from __future__ import annotations
 
 import csv
 import html
 import io
+import json
+import re
+
+
+def _simple_markdown_to_html(text: str) -> str:
+    """Minimal Markdown → HTML fallback (no external deps)."""
+    escaped = html.escape(text or "")
+    lines = escaped.splitlines()
+    out: list[str] = []
+    in_code = False
+    in_ul = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            if in_code:
+                out.append("</code></pre>")
+                in_code = False
+            else:
+                if in_ul:
+                    out.append("</ul>")
+                    in_ul = False
+                out.append("<pre><code>")
+                in_code = True
+            continue
+        if in_code:
+            out.append(line + "\n")
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.*)$", line)
+        if heading:
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            level = len(heading.group(1))
+            out.append(f"<h{level}>{heading.group(2)}</h{level}>")
+            continue
+        if re.match(r"^[-*]\s+", line):
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            out.append(f"<li>{re.sub(r'^[-*]\s+', '', line)}</li>")
+            continue
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+        if not line.strip():
+            out.append("")
+            continue
+        rendered = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
+        rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", rendered)
+        out.append(f"<p>{rendered}</p>")
+    if in_code:
+        out.append("</code></pre>")
+    if in_ul:
+        out.append("</ul>")
+    return "\n".join(out)
 
 
 def markdown_to_safe_html(text: str) -> str:
-    """Best-effort Markdown → HTML without client JS (CSP-safe).
-
-    Prefer the optional ``markdown`` package; otherwise escape into ``<pre>``.
-    """
+    """Best-effort Markdown → HTML without client JS (CSP-safe)."""
     try:
         import markdown as md_lib  # type: ignore
 
@@ -21,7 +72,7 @@ def markdown_to_safe_html(text: str) -> str:
             output_format="html5",
         )
     except Exception:
-        return f'<pre class="code">{html.escape(text)}</pre>'
+        return _simple_markdown_to_html(text)
 
 
 _MARKDOWN_BODY_CSS = """
@@ -122,9 +173,13 @@ def build_markdown_viewer_page(
       margin: 0; font-size: 14px; font-weight: 600;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .topbar a.raw {{
+    .topbar-actions {{
+      display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+    }}
+    .topbar a.action {{
       color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
     }}
+    .topbar a.action:hover {{ text-decoration: underline; }}
     .wrap {{
       box-sizing: border-box;
       max-width: 980px;
@@ -141,7 +196,7 @@ def build_markdown_viewer_page(
 <body>
   <div class="topbar">
     <h1>{title}</h1>
-    {topbar_right_html}
+    <div class="topbar-actions">{topbar_right_html}</div>
   </div>
   <div class="wrap">
     <article class="markdown-body">{body_inner}</article>
@@ -158,13 +213,18 @@ def build_text_viewer_page(
     as_markdown: bool,
     download_href: str,
     as_csv: bool = False,
+    as_json: bool = False,
 ) -> str:
-    """CSP-safe text/markdown/csv viewer used by Load-files ``/api/files/view``."""
+    """CSP-safe text/markdown/json/csv viewer used by Load-files ``/api/files/view``."""
     download_link = (
-        f'<a class="raw" href="{html.escape(download_href, quote=True)}">Download</a>'
+        f'<a class="action" href="{html.escape(download_href, quote=True)}">Download</a>'
     )
     if as_csv:
         return build_csv_viewer_page(
+            file_name, text, topbar_right_html=download_link
+        )
+    if as_json:
+        return build_json_viewer_page(
             file_name, text, topbar_right_html=download_link
         )
     if as_markdown:
@@ -200,7 +260,7 @@ def build_text_viewer_page(
       margin: 0; font-size: 14px; font-weight: 600;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .topbar a.raw {{
+    .topbar a.action, .topbar a.raw {{
       color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
     }}
     .wrap {{
@@ -230,6 +290,98 @@ def build_text_viewer_page(
   </div>
   <div class="wrap">
     <article>{body_inner}</article>
+  </div>
+</body>
+</html>
+"""
+
+
+def build_json_viewer_page(
+    file_name: str,
+    text: str,
+    *,
+    topbar_right_html: str = "",
+) -> str:
+    """Full HTML document for JSON preview (pretty-printed, CSP-safe)."""
+    title = html.escape(file_name)
+    try:
+        data = json.loads(text)
+        pretty = html.escape(json.dumps(data, ensure_ascii=False, indent=2))
+        badge = "JSON viewer"
+    except Exception:
+        pretty = html.escape(text)
+        badge = "JSON viewer (invalid JSON — raw text)"
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+    :root {{ color-scheme: light dark; }}
+    body {{
+      margin: 0;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }}
+    .topbar {{
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 20px;
+      border-bottom: 1px solid #30363d;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(8px);
+    }}
+    .topbar h1 {{
+      margin: 0; font-size: 14px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }}
+    .topbar-actions {{
+      display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+    }}
+    .topbar a.action {{
+      color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
+    }}
+    .topbar a.action:hover {{ text-decoration: underline; }}
+    .badge {{
+      font-size: 12px; color: #8b949e; margin-right: 4px; white-space: nowrap;
+    }}
+    .wrap {{
+      box-sizing: border-box;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px 16px 64px;
+    }}
+    pre.json {{
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      padding: 16px 18px;
+      border-radius: 8px;
+      background: rgba(110, 118, 129, 0.12);
+      border: 1px solid #30363d;
+    }}
+    @media (prefers-color-scheme: light) {{
+      body {{ background: #ffffff; color: #1f2328; }}
+      .topbar {{ background: rgba(255,255,255,0.92); border-bottom-color: #d0d7de; }}
+      pre.json {{ border-color: #d0d7de; background: rgba(175, 184, 193, 0.12); }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>{title}</h1>
+    <div class="topbar-actions">
+      <span class="badge">{html.escape(badge)}</span>
+      {topbar_right_html}
+    </div>
+  </div>
+  <div class="wrap">
+    <pre class="json">{pretty}</pre>
   </div>
 </body>
 </html>
@@ -267,32 +419,30 @@ def build_csv_viewer_page(
         if truncated:
             badge += f" (first {max_rows} shown)"
     except Exception:
+        rows = []
+        badge = "CSV viewer (parse failed — raw text)"
         body = f'<pre class="raw">{html.escape(text or "")}</pre>'
-        return _csv_shell(
-            title,
-            "CSV viewer (parse failed — raw text)",
-            topbar_right_html,
-            body,
-        )
+        return _csv_shell(title, badge, topbar_right_html, body)
 
     if not rows:
-        return _csv_shell(
-            title, badge, topbar_right_html, '<p class="empty">Empty CSV</p>'
-        )
+        body = '<p class="empty">Empty CSV</p>'
+        return _csv_shell(title, badge, topbar_right_html, body)
 
     header = rows[0]
     body_rows = rows[1:] if len(rows) > 1 else []
     thead = "".join(f"<th>{html.escape(c)}</th>" for c in header)
     tbody_parts: list[str] = []
     for row in body_rows:
+        # Pad/truncate to header width for aligned columns
         cells = list(row) + [""] * max(0, len(header) - len(row))
         cells = cells[: len(header)] if header else cells
         tbody_parts.append(
             "<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>"
         )
+    # If only one row, treat as data without header
     if len(rows) == 1:
         body = (
-            "<table><tbody><tr>"
+            '<table><tbody><tr>'
             + "".join(f"<td>{html.escape(c)}</td>" for c in header)
             + "</tr></tbody></table>"
         )
@@ -336,12 +486,12 @@ def _csv_shell(
     .topbar-actions {{
       display: flex; align-items: center; gap: 14px; flex-shrink: 0;
     }}
-    .topbar a.raw {{
+    .topbar a.action {{
       color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
     }}
-    .topbar a.raw:hover {{ text-decoration: underline; }}
+    .topbar a.action:hover {{ text-decoration: underline; }}
     .badge {{
-      font-size: 12px; color: #8b949e; white-space: nowrap;
+      font-size: 12px; color: #8b949e; margin-right: 4px; white-space: nowrap;
     }}
     .wrap {{
       box-sizing: border-box;

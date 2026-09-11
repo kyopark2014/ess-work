@@ -558,12 +558,12 @@ def get_ess_document_markdown_viewer(
         f"?kind={quote(kind)}&download=1"
     )
     actions = [
-        f'<a class="raw" href="{html.escape(download_href, quote=True)}">Download</a>',
+        f'<a class="action" href="{html.escape(download_href, quote=True)}">Download</a>',
     ]
     if raw_url:
         actions.append(
-            f'<a class="raw" href="{html.escape(raw_url, quote=True)}" '
-            f'target="_blank" rel="noopener">Raw (CloudFront)</a>'
+            f'<a class="action" href="{html.escape(raw_url, quote=True)}" '
+            f'target="_blank" rel="noopener noreferrer">Raw</a>'
         )
     from application.viewer_html import build_markdown_viewer_page
 

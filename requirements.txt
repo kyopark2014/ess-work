@@ -59,3 +59,4 @@ python-docx
 pypdf
 pdfplumber
 httpx2
+markdown>=3.5

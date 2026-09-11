@@ -50,10 +50,9 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
   if (!name) return null;
   const lower = name.toLowerCase();
 
-  // CSV → in-app table viewer (Load-files /api/files/view).
-  if (lower.endsWith(".csv") && (!/^https?:\/\//i.test(trimmed) || /\/upload\//i.test(trimmed))) {
-    return `/api/files/view/${encodeURIComponent(name)}`;
-  }
+  // CloudFront artifact text files → authenticated artifact viewer.
+  const artifactViewer = resolveArtifactViewerHref(trimmed);
+  if (artifactViewer && artifactViewer !== trimmed) return artifactViewer;
 
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (trimmed.startsWith("/api/")) return trimmed;
@@ -64,7 +63,7 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
   }
 
   // ESS document viewers (workspace / local paths still open via API).
-  if (lower.endsWith(".md")) {
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) {
     return `/api/ess/documents/${encodeURIComponent(name)}/markdown`;
   }
   if (lower.endsWith(".json")) {
@@ -76,12 +75,55 @@ function resolveAttachmentOpenUrl(ref: string): string | null {
   if (lower.endsWith(".pdf")) {
     return `/api/ess/documents/${encodeURIComponent(name)}/pdf`;
   }
+  if (lower.endsWith(".csv")) {
+    return `/api/files/view/${encodeURIComponent(name)}`;
+  }
   return `/api/files/view/${encodeURIComponent(name)}`;
+}
+
+/** Rewrite CloudFront/S3 artifact .md/.json/.csv links to the in-app viewer. */
+function resolveArtifactViewerHref(href: string | undefined): string | undefined {
+  if (!href) return href;
+  try {
+    const url = new URL(href, window.location.origin);
+    const path = url.pathname;
+
+    // ESS published: /artifacts/{project}/{user}/rest.ext
+    let match = path.match(
+      /\/artifacts\/[^/]+\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+    );
+    // Agentic-style: /artifacts/{user}/rest.ext
+    if (!match) {
+      match = path.match(
+        /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+      );
+    }
+    // Flat legacy: /artifacts/file.ext
+    if (!match) {
+      match = path.match(
+        /\/artifacts\/([^/]+\.(?:md|markdown|json|csv))$/i,
+      );
+    }
+    if (!match) return href;
+
+    const rest = decodeURIComponent(match[1]);
+    if (!rest || rest.includes("..")) return href;
+    const encoded = rest
+      .split("/")
+      .filter(Boolean)
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `/api/artifacts/view/${encoded}`;
+  } catch {
+    return href;
+  }
 }
 
 /** Rewrite chat markdown links to in-app viewers when possible. */
 function resolveChatHref(href: string | undefined): string | undefined {
   if (!href) return href;
+  const artifactViewer = resolveArtifactViewerHref(href);
+  if (artifactViewer && artifactViewer !== href) return artifactViewer;
   try {
     const url = new URL(href, window.location.origin);
     const name = decodeURIComponent(url.pathname.split("/").pop() || "");
@@ -94,7 +136,6 @@ function resolveChatHref(href: string | undefined): string | undefined {
   }
   return href;
 }
-
 
 function splitAttachmentRefs(refs: string[]): {
   imageUrls: string[];

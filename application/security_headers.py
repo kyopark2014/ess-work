@@ -143,8 +143,10 @@ def _is_graph_html(scope: Scope) -> bool:
 
 
 def _is_document_viewer_html(scope: Scope) -> bool:
-    """ESS markdown / JSON HTML viewers opened in a new browser tab."""
+    """ESS / artifact HTML viewers opened in a new browser tab."""
     path = scope.get("path") or "/"
+    if path.startswith("/api/artifacts/view/"):
+        return True
     return path.startswith("/api/ess/documents/") and (
         path.endswith("/markdown") or path.endswith("/json")
     )

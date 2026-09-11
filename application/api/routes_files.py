@@ -146,11 +146,13 @@ def view_loaded_file(
 
         as_markdown = ext in {".md", ".markdown"}
         as_csv = ext == ".csv"
+        as_json = ext == ".json"
         page = build_text_viewer_page(
             safe_name,
             text,
             as_markdown=as_markdown,
             as_csv=as_csv,
+            as_json=as_json,
             download_href=f"/api/files/view/{quote(safe_name)}?download=1",
         )
         return HTMLResponse(content=page, media_type="text/html; charset=utf-8")

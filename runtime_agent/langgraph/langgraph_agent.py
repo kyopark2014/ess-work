@@ -55,6 +55,9 @@ SKILLS_DIR = os.path.join(WORKING_DIR, "skills")
 # Per-user artifacts/skills under SESSION_STORAGE_DIR (set via set_user_workspace).
 ARTIFACTS_DIR = utils.get_user_artifacts_dir("default")
 USER_SKILLS_DIR = utils.get_user_skills_dir("default")
+# Active user for S3 keys: artifacts/{user_id}/... (set via set_user_artifacts).
+CURRENT_USER_ID: str | None = None
+_ALLOWED_S3_PREFIXES = ("artifacts/", "images/", "docs/")
 
 # Fixed/per-user roots for bash ($SKILLS_DIR etc.). Per-skill paths use skill.SKILL_DIRS.
 os.environ["SKILLS_DIR"] = SKILLS_DIR
@@ -103,7 +106,8 @@ _EXCLUDED_SNAPSHOT_DIRS = frozenset({
 
 def set_user_artifacts(user_id: str | None) -> str:
     """Point ARTIFACTS_DIR at {SESSION_STORAGE_DIR}/{user_id}/artifacts."""
-    global ARTIFACTS_DIR
+    global ARTIFACTS_DIR, CURRENT_USER_ID, USER_SKILLS_DIR
+    CURRENT_USER_ID = user_id
     artifacts_dir = utils.ensure_user_artifacts_dir(user_id)
     ARTIFACTS_DIR = artifacts_dir
     os.environ["ARTIFACTS_DIR"] = artifacts_dir
@@ -184,20 +188,149 @@ def _resolve_workdir_path(filepath: str) -> str:
     return os.path.join(WORKING_DIR, filepath)
 
 
+def _current_user_segment() -> str | None:
+    return utils.sanitize_user_path_segment(CURRENT_USER_ID) or utils.sanitize_user_path_segment(
+        _user_id_from_artifacts_dir()
+    )
+
+
+def _strip_to_allowed_prefix(normalized: str) -> str:
+    for prefix in _ALLOWED_S3_PREFIXES:
+        idx = normalized.find(prefix)
+        if idx != -1:
+            return normalized[idx:]
+    if normalized == "artifacts":
+        return "artifacts/"
+    return normalized
+
+
+def _s3_key_with_user(prefix: str, rest: str) -> str:
+    """Build ``{prefix}/{user_id}/{rest}`` (or without user when unknown)."""
+    rest = (rest or "").lstrip("/")
+    user = _current_user_segment()
+    if user:
+        if rest == user or rest.startswith(f"{user}/"):
+            return f"{prefix}/{rest}" if rest else f"{prefix}/{user}/"
+        return f"{prefix}/{user}/{rest}" if rest else f"{prefix}/{user}/"
+    return f"{prefix}/{rest}" if rest else f"{prefix}/"
+
+
+def _public_url_for_key(key: str) -> str:
+    """Build a CloudFront/sharing URL with each path segment quoted."""
+    base = (sharing_url or "").rstrip("/")
+    quoted = "/".join(quote(seg) for seg in key.split("/") if seg != "")
+    return f"{base}/{quoted}"
+
+
 def _s3_key_for_upload(filepath: str, full_path: str) -> str:
-    """Map a local file onto an artifacts/|images/|docs/ S3 key when possible."""
-    normalized = filepath.replace("\\", "/").lstrip("./")
-    if normalized.startswith(("artifacts/", "images/", "docs/")):
-        return normalized
+    """Map a local file onto ``artifacts|images|docs/{user_id}/...`` S3 key."""
+    normalized = _strip_to_allowed_prefix(
+        filepath.replace("\\", "/").lstrip("./")
+    )
+
+    for prefix in ("artifacts", "images", "docs"):
+        head = f"{prefix}/"
+        if normalized.startswith(head) or normalized == prefix:
+            rest = "" if normalized == prefix else normalized[len(head) :]
+            return _s3_key_with_user(prefix, rest)
+
     try:
         artifacts_real = os.path.realpath(ARTIFACTS_DIR)
         full_real = os.path.realpath(full_path)
         if os.path.commonpath([full_real, artifacts_real]) == artifacts_real:
             rel = os.path.relpath(full_real, artifacts_real).replace("\\", "/")
-            return f"artifacts/{rel}" if rel != "." else "artifacts/"
+            return _s3_key_with_user("artifacts", "" if rel == "." else rel)
     except (OSError, ValueError):
         pass
+
+    try:
+        session_root = os.path.realpath(utils.SESSION_STORAGE_DIR)
+        full_real = os.path.realpath(full_path)
+        if os.path.commonpath([full_real, session_root]) == session_root:
+            rel = os.path.relpath(full_real, session_root).replace("\\", "/")
+            parts = rel.split("/")
+            if len(parts) >= 2 and parts[1] == "artifacts":
+                user_seg = parts[0]
+                rest = "/".join(parts[2:])
+                if user_seg:
+                    return (
+                        f"artifacts/{user_seg}/{rest}"
+                        if rest
+                        else f"artifacts/{user_seg}/"
+                    )
+    except (OSError, ValueError):
+        pass
+
     return normalized.lstrip("/")
+
+
+def _user_id_from_artifacts_dir() -> str | None:
+    """Best-effort user id from the active ``ARTIFACTS_DIR``."""
+    try:
+        parent = os.path.dirname(ARTIFACTS_DIR)
+        name = os.path.basename(parent)
+        if name and name not in {"artifacts", ".session_storage"}:
+            return name
+    except OSError:
+        pass
+    return None
+
+
+def _paths_for_ui(relative_paths: list) -> list:
+    """Return public URLs if sharing_url is set, otherwise absolute local paths.
+
+    When sharing_url is set, local artifacts are uploaded to the project S3
+    bucket first so CloudFront keys actually exist.
+    """
+    if sharing_url:
+        _ensure_artifacts_uploaded(relative_paths)
+
+    out = []
+    user_id = _user_id_from_artifacts_dir()
+    for rel in relative_paths:
+        norm = str(rel).replace("\\", "/")
+        fname = os.path.basename(norm)
+
+        # Test-case drafts live under artifacts/tc/ and publish to S3 artifacts/{project}/{user}/tc/.
+        if fname.lower().endswith(".xlsx") and "/artifacts/tc/" in norm:
+            cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
+            if cf_url:
+                out.append(cf_url)
+            else:
+                out.append(f"/api/ess/artifacts/tc/{quote(fname)}")
+            continue
+
+        if norm.startswith(".session_storage/") or "/.session_storage/" in norm:
+            if fname.lower().endswith(".xlsx") and "/tc/" in norm:
+                cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
+                out.append(
+                    cf_url if cf_url else f"/api/ess/artifacts/tc/{quote(fname)}"
+                )
+            else:
+                out.append(os.path.abspath(os.path.join(WORKING_DIR, rel)))
+            continue
+
+        key = _strip_to_allowed_prefix(norm.lstrip("./"))
+        if key.startswith(_ALLOWED_S3_PREFIXES) or key in ("artifacts", "images", "docs"):
+            for prefix in ("artifacts", "images", "docs"):
+                head = f"{prefix}/"
+                if key == prefix:
+                    key = _s3_key_with_user(prefix, "")
+                    break
+                if key.startswith(head):
+                    key = _s3_key_with_user(prefix, key[len(head) :])
+                    break
+            if sharing_url:
+                out.append(_public_url_for_key(key))
+            else:
+                out.append(_resolve_workdir_path(key))
+            continue
+
+        if sharing_url:
+            out.append(_public_url_for_key(norm.lstrip("./")))
+        else:
+            out.append(os.path.abspath(os.path.join(WORKING_DIR, rel)))
+    return out
 
 
 def _working_dir_files_mtime_snapshot() -> dict:
@@ -386,61 +519,6 @@ def _ensure_artifacts_uploaded(relative_paths: list) -> None:
             _upload_file_to_project_s3(str(rel), full)
         except Exception as e:
             logger.warning("auto-upload failed for %s: %s", rel, e)
-
-
-def _user_id_from_artifacts_dir() -> str | None:
-    """Best-effort user id from the active ``ARTIFACTS_DIR``."""
-    try:
-        parent = os.path.dirname(ARTIFACTS_DIR)
-        name = os.path.basename(parent)
-        if name and name not in {"artifacts", ".session_storage"}:
-            return name
-    except OSError:
-        pass
-    return None
-
-
-def _paths_for_ui(relative_paths: list) -> list:
-    """Return public URLs if sharing_url is set, otherwise absolute paths for Streamlit.
-
-    When sharing_url is set, local artifacts are uploaded to the project S3
-    bucket first so CloudFront keys actually exist.
-    """
-    if sharing_url:
-        _ensure_artifacts_uploaded(relative_paths)
-
-    out = []
-    base = sharing_url.rstrip("/") if sharing_url else ""
-    user_id = _user_id_from_artifacts_dir()
-    for rel in relative_paths:
-        norm = str(rel).replace("\\", "/")
-        fname = os.path.basename(norm)
-
-        # Test-case drafts live under artifacts/tc/ and publish to S3 artifacts/{project}/{user}/tc/.
-        if fname.lower().endswith(".xlsx") and "/artifacts/tc/" in norm:
-            cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
-            if cf_url:
-                out.append(cf_url)
-            else:
-                out.append(f"/api/ess/artifacts/tc/{quote(fname)}")
-            continue
-
-        # Never map .session_storage paths onto CloudFront (403 AccessDenied).
-        if norm.startswith(".session_storage/") or "/.session_storage/" in norm:
-            if fname.lower().endswith(".xlsx") and "/tc/" in norm:
-                cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
-                out.append(
-                    cf_url if cf_url else f"/api/ess/artifacts/tc/{quote(fname)}"
-                )
-            else:
-                out.append(os.path.abspath(os.path.join(WORKING_DIR, rel)))
-            continue
-
-        if base:
-            out.append(f"{base}/{quote(rel)}")
-        else:
-            out.append(os.path.abspath(os.path.join(WORKING_DIR, rel)))
-    return out
 
 
 _KOREAN_TTF_CANDIDATES = (
