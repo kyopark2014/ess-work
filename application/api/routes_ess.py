@@ -484,7 +484,7 @@ def get_ess_document_pdf(
             path,
             media_type="application/pdf",
             filename=name,
-            headers={"Content-Disposition": f'inline; filename="{name}"'},
+            content_disposition_type="inline",
         )
     except HTTPException as exc:
         if exc.status_code != 404:
@@ -539,7 +539,7 @@ def get_ess_document_markdown_viewer(
             md_path,
             media_type="text/markdown; charset=utf-8",
             filename=md_name,
-            headers={"Content-Disposition": f'attachment; filename="{md_name}"'},
+            content_disposition_type="attachment",
         )
 
     # Ensure CloudFront copy exists (best-effort).
@@ -591,7 +591,7 @@ def get_ess_testcase_draft_xlsx(filename: str, request: Request):
         local_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=xlsx_name,
-        headers={"Content-Disposition": f'attachment; filename="{xlsx_name}"'},
+        content_disposition_type="attachment",
     )
 
 
@@ -607,7 +607,7 @@ def get_ess_document_xlsx(filename: str, request: Request):
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=xlsx_name,
-        headers={"Content-Disposition": f'attachment; filename="{xlsx_name}"'},
+        content_disposition_type="attachment",
     )
 
 
