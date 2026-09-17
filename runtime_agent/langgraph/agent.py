@@ -1,4 +1,5 @@
 import json
+import os
 import logging
 import sys
 import traceback
@@ -182,6 +183,17 @@ async def agent_langgraph(payload):
     chat.set_checkpoint_session_id(runtime_session_id)
     if runtime_session_id:
         run_cancel.clear(runtime_session_id)
+
+    task_id = (payload.get("task_id") or "").strip()
+    if task_id:
+        os.environ["TASK_ID"] = task_id
+    else:
+        os.environ.pop("TASK_ID", None)
+    if runtime_session_id:
+        os.environ["RUNTIME_SESSION_ID"] = str(runtime_session_id)
+    else:
+        os.environ.pop("RUNTIME_SESSION_ID", None)
+    logger.info(f"task_id: {task_id or '(none)'}")
 
     cancelled = False
     app = None

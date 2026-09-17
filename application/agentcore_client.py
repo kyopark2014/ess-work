@@ -110,6 +110,7 @@ class AgentCoreService:
         memory_enabled=None,
 
         files=None,
+        task_id=None,
     ) -> str:
         return json.dumps(
             {
@@ -125,6 +126,7 @@ class AgentCoreService:
                     bool(memory_enabled) if memory_enabled is not None else True
                 ),
                 "runtime_session_id": runtime_session_id,
+                "task_id": task_id or "",
                 "files": files or [],
             }
         )
@@ -194,6 +196,7 @@ class AgentCoreService:
         memory_enabled=None,
 
         files=None,
+        task_id=None,
     ):
         tool_info_list.clear()
         tool_result_list.clear()
@@ -217,6 +220,7 @@ class AgentCoreService:
             memory_enabled=memory_enabled,
 
             files=files,
+            task_id=task_id,
         )
 
         agent_runtime_arn = self.resolve_runtime_arn()
@@ -292,6 +296,7 @@ def run_agent(
     memory_enabled=None,
 
     files=None,
+    task_id=None,
 ):
     return AgentCoreService().run(
         prompt,
@@ -305,4 +310,5 @@ def run_agent(
         memory_enabled=memory_enabled,
 
         files=files,
+        task_id=task_id,
     )

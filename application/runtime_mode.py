@@ -42,6 +42,7 @@ def run_agent(
     guardrail_enabled=None,
     memory_enabled=None,
     files=None,
+        task_id=None,
 ):
     """Dispatch agent calls to AgentCore runtime only."""
     from application import agentcore_client
@@ -59,4 +60,5 @@ def run_agent(
         guardrail_enabled=guardrail_enabled,
         memory_enabled=memory_enabled,
         files=files,
+                task_id=task_id,
     )

@@ -16,6 +16,7 @@ from application.api.routes_chat import router as chat_router
 from application.api.routes_files import router as files_router
 from application.api.routes_artifacts import router as artifacts_router
 from application.api.routes_rag import router as rag_router
+from application.api.routes_schedules import router as schedules_router
 from application.security_headers import SecurityHeadersMiddleware
 from application.task_store import init_db
 from application.task_store_persistence import (
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI):
             "Task store using local SQLite; "
             "per-user DBs under session_storage/{user}/{user}.db",
         )
+    try:
+        from application import schedule_service
+
+        result = schedule_service.cleanup_completed_schedules()
+        logger.info("Startup schedule cleanup: %s", result)
+    except Exception:
+        logger.exception("Startup schedule cleanup failed (non-fatal)")
     yield
     flush_persist()
     logger.info("Task store shutdown persist complete")
@@ -90,6 +98,7 @@ app.include_router(chat_router)
 app.include_router(files_router)
 app.include_router(artifacts_router)
 app.include_router(rag_router)
+app.include_router(schedules_router)
 
 
 @app.get("/api/health")

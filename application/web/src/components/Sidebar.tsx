@@ -5,9 +5,11 @@ import { useTheme } from "../hooks/useTheme";
 import type { Theme } from "../theme";
 import type { AppConfig, Task } from "../types";
 import { ConfigDrawer } from "./ConfigDrawer";
+import { ScheduleListModal } from "./ScheduleListModal";
 import { TaskListItem } from "./TaskListItem";
 import {
   AppearanceIcon,
+  ScheduleIcon,
   ChevronIcon,
   EssIcon,
   GuardrailIcon,
@@ -102,6 +104,7 @@ export function Sidebar({
   const knowledgeBtnRef = useRef<HTMLButtonElement>(null);
   const settingsSectionRef = useRef<HTMLDivElement>(null);
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [scheduleListOpen, setScheduleListOpen] = useState(false);
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [essConfigureOpen, setEssConfigureOpen] = useState(false);
   const [essDocListOpen, setEssDocListOpen] = useState(false);
@@ -618,6 +621,17 @@ export function Sidebar({
                 />
               </label>
               <button
+                type="button"
+                className={`sidebar-menu-btn${scheduleListOpen ? " is-active" : ""}`}
+                onClick={() => {
+                  onCloseDrawer();
+                  setScheduleListOpen(true);
+                }}
+              >
+                <ScheduleIcon className="sidebar-icon" />
+                <span>Schedule List</span>
+              </button>
+              <button
                 ref={appearanceBtnRef}
                 type="button"
                 className={`sidebar-menu-btn${drawer === "appearance" ? " is-active" : ""}`}
@@ -679,6 +693,18 @@ export function Sidebar({
           onClose={handleDrawerClose}
         />
       )}
+
+      <ScheduleListModal
+        open={scheduleListOpen}
+        tasks={tasks}
+        onSelectTask={onSelectTask}
+        onClose={() => {
+          setScheduleListOpen(false);
+          setSettingsExpanded(false);
+          onCloseDrawer();
+        }}
+      />
+
       {drawer === "ess" && (
         <ConfigDrawer
           title="ESS"
