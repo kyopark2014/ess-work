@@ -88,16 +88,16 @@ function resolveArtifactViewerHref(href: string | undefined): string | undefined
     const url = new URL(href, window.location.origin);
     const path = url.pathname;
 
-    // ESS published: /artifacts/{project}/{user}/rest.ext
+    // Keep everything after the first segment under /artifacts/.
+    // Do NOT strip a second segment as "{user}" here: agentic nested keys look like
+    // /artifacts/{user}/{subdir}/file.csv and an ESS-style strip would drop {subdir}.
+    // Backend _normalize_artifact_rest already unwraps {user}/… and
+    // {project}/{user}/… when resolving S3 keys.
+    //
+    // Agentic / ESS: /artifacts/{user|project}/…/file.ext → keep rest after first segment
     let match = path.match(
-      /\/artifacts\/[^/]+\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+      /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
     );
-    // Agentic-style: /artifacts/{user}/rest.ext
-    if (!match) {
-      match = path.match(
-        /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
-      );
-    }
     // Flat legacy: /artifacts/file.ext
     if (!match) {
       match = path.match(
