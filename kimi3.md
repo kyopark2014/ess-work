@@ -86,7 +86,9 @@ LangGraph 멀티턴·툴 호출 에이전트이므로 Chat Completions 경로를
 ## 사용 전 확인 사항
 
 1. **Bedrock 모델 액세스**: 콘솔에서 Moonshot AI / Kimi K3 모델 액세스(또는 Inference profile)를 활성화했는지 확인합니다.
-2. **IAM**: Runtime 역할에 이미 `bedrock:InvokeModel` + `arn:aws:bedrock:*::foundation-model/*`가 있으면 추가 IAM 변경은 보통 필요 없습니다. Bearer token 발급 권한은 Mantle/OpenAI 경로와 동일하게 기존 정책을 사용합니다.
+2. **IAM**: Chat Completions(bearer) 경로에는 `bedrock:CallWithBearerToken`이 필요합니다.
+   Mantle용 `bedrock-mantle:CallWithBearerToken`만으로는 부족합니다
+   (`runtime_agent/langgraph/installer.py`의 `BedrockRuntimeBearerToken`).
 3. **리전**: 요청을 보내는 소스 리전은 `us-west-2` / `us-east-1` / `us-east-2` 중 프로필의 첫 항목(`us-west-2`)이 기본으로 사용됩니다.
 
 ---

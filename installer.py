@@ -998,6 +998,13 @@ def _get_ecs_task_inline_policies() -> List[Dict]:
                         "Action": ["bedrock-mantle:CallWithBearerToken"],
                         "Resource": ["*"],
                     },
+                    {
+                        # Kimi K3 Chat Completions via bedrock-runtime …/openai/v1
+                        "Sid": "BedrockRuntimeBearerToken",
+                        "Effect": "Allow",
+                        "Action": ["bedrock:CallWithBearerToken"],
+                        "Resource": ["*"],
+                    },
                 ],
             },
         },
