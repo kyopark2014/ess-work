@@ -43,7 +43,7 @@ interface Props {
 const RAG_ACCEPT =
   ".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.json,.py,.js";
 const LOAD_ACCEPT =
-  ".pdf,.txt,.md,.markdown,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.json,.py,.js,.ts,.tsx,.jsx,.yml,.yaml,.xml,.rst,.png,.jpg,.jpeg,.webp,.gif";
+  ".pdf,.txt,.md,.markdown,.csv,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.json,.py,.js,.ts,.tsx,.jsx,.yml,.yaml,.xml,.rst,.dxf,.png,.jpg,.jpeg,.webp,.gif";
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif";
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 160;
