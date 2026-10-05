@@ -94,10 +94,16 @@ function resolveArtifactViewerHref(href: string | undefined): string | undefined
     // Backend _normalize_artifact_rest already unwraps {user}/… and
     // {project}/{user}/… when resolving S3 keys.
     //
-    // Agentic / ESS: /artifacts/{user|project}/…/file.ext → keep rest after first segment
+    // Workspace: /{user}/artifacts/…/file.ext
     let match = path.match(
-      /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+      /\/[^/]+\/artifacts\/(.+\.(?:md|markdown|json|csv))$/i,
     );
+    // Agentic / ESS: /artifacts/{user|project}/…/file.ext → keep rest after first segment
+    if (!match) {
+      match = path.match(
+        /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+      );
+    }
     // Flat legacy: /artifacts/file.ext
     if (!match) {
       match = path.match(

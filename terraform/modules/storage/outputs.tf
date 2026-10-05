@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Amazon S3 Files: session FS (/mnt/workspace) + app-data FS (/mnt/app-data).
+# Amazon S3 Files. Empty prefixes share one bucket-root file system.
 # See: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files.html
+output "shares_bucket_root" {
+  value = local.share_root
+}
+
 output "file_system_id" {
   value = aws_s3files_file_system.this.id
 }
@@ -27,15 +31,15 @@ output "access_point_arn" {
 }
 
 output "app_data_file_system_id" {
-  value = aws_s3files_file_system.app_data.id
+  value = local.share_root ? aws_s3files_file_system.this.id : aws_s3files_file_system.app_data[0].id
 }
 
 output "app_data_file_system_arn" {
-  value = aws_s3files_file_system.app_data.arn
+  value = local.share_root ? aws_s3files_file_system.this.arn : aws_s3files_file_system.app_data[0].arn
 }
 
 output "app_data_access_point_arn" {
-  value = aws_s3files_access_point.app_data.arn
+  value = local.share_root ? aws_s3files_access_point.this.arn : aws_s3files_access_point.app_data[0].arn
 }
 
 output "agent_runtime_vpc_subnets" {

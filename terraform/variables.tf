@@ -87,13 +87,15 @@ variable "custom_header_name" {
 }
 
 variable "s3_files_session_prefix" {
-  type    = string
-  default = "agentcore-sessions/"
+  type        = string
+  description = "S3 Files prefix for the Runtime mount. Empty mounts the bucket root at /mnt/workspace. Do not use \"/\"."
+  default     = ""
 }
 
 variable "s3_files_app_data_prefix" {
-  type    = string
-  default = "app-data/"
+  type        = string
+  description = "S3 Files prefix for the ECS mount. Empty shares the bucket-root file system with Runtime."
+  default     = ""
 }
 
 variable "session_storage_mount_path" {

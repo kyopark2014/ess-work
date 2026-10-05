@@ -15,6 +15,14 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+locals {
+  # Empty or "/" means the bucket root. Passing "/" to the API scopes keys
+  # that literally start with "/".
+  session_prefix  = trim(var.s3_files_session_prefix, "/")
+  app_data_prefix = trim(var.s3_files_app_data_prefix, "/")
+  share_root      = local.session_prefix == local.app_data_prefix
+}
+
 data "aws_iam_policy_document" "sync_assume" {
   statement {
     effect  = "Allow"
@@ -74,10 +82,10 @@ resource "aws_iam_role_policy" "sync" {
 }
 
 resource "aws_s3files_file_system" "this" {
-  # Amazon S3 Files — Runtime session storage (agentcore-sessions/).
+  # Runtime mount. Omit prefix so an empty value is the bucket root.
   bucket                = var.s3_bucket_arn
   role_arn              = aws_iam_role.sync.arn
-  prefix                = var.s3_files_session_prefix
+  prefix                = local.session_prefix != "" ? "${local.session_prefix}/" : null
   accept_bucket_warning = true
 
   depends_on = [aws_iam_role_policy.sync]
@@ -112,25 +120,29 @@ resource "aws_s3files_access_point" "this" {
 }
 
 resource "aws_s3files_file_system" "app_data" {
-  # Amazon S3 Files — ECS app-data (tasks.db / graph / settings).
+  # Separate ECS file system only when its prefix differs from Runtime.
+  # The bucket root can have only one file system.
+  count = local.share_root ? 0 : 1
+
   bucket                = var.s3_bucket_arn
   role_arn              = aws_iam_role.sync.arn
-  prefix                = var.s3_files_app_data_prefix
+  prefix                = local.app_data_prefix != "" ? "${local.app_data_prefix}/" : null
   accept_bucket_warning = true
 
   depends_on = [aws_iam_role_policy.sync]
 }
 
 resource "aws_s3files_mount_target" "app_data" {
-  count = length(var.private_subnet_ids)
+  count = local.share_root ? 0 : length(var.private_subnet_ids)
 
-  file_system_id  = aws_s3files_file_system.app_data.id
+  file_system_id  = aws_s3files_file_system.app_data[0].id
   subnet_id       = var.private_subnet_ids[count.index]
   security_groups = [var.s3files_mount_security_group_id]
 }
 
 resource "aws_s3files_access_point" "app_data" {
-  file_system_id = aws_s3files_file_system.app_data.id
+  count          = local.share_root ? 0 : 1
+  file_system_id = aws_s3files_file_system.app_data[0].id
 
   posix_user {
     uid = 0

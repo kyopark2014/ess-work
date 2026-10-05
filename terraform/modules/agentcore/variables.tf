@@ -103,3 +103,9 @@ variable "knowledge_base_role_arn" {
   type    = string
   default = ""
 }
+
+variable "manage_s3files_policy" {
+  type        = bool
+  description = "Write the Runtime file system policy. False when ECS shares that file system and owns the combined policy."
+  default     = true
+}

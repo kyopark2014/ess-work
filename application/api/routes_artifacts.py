@@ -75,6 +75,12 @@ def _normalize_artifact_rest(file_path: str, user_id: str) -> str:
             return parts[1]
         raise HTTPException(status_code=403, detail="Artifact access denied")
 
+    if len(parts) >= 3 and parts[0] == segment and parts[1] == "artifacts":
+        rest = "/".join(parts[2:])
+        if not rest:
+            raise HTTPException(status_code=400, detail="File path is required")
+        return rest
+
     if parts[0] == segment:
         rest = "/".join(parts[1:])
         if not rest:
@@ -115,6 +121,7 @@ def _s3_key_candidates(user_id: str, file_path: str) -> tuple[list[str], str]:
     project = _project_name()
 
     keys: list[str] = [
+        f"{segment}/artifacts/{rest}",
         f"artifacts/{segment}/{rest}",
     ]
     if project:

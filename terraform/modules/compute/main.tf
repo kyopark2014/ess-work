@@ -240,7 +240,7 @@ resource "aws_iam_role_policy" "task" {
   })
 }
 
-# App-data FS policy: ECS only (Runtime uses session FS).
+# App-data FS policy. Includes the Runtime role when both mounts share one file system.
 resource "aws_s3files_file_system_policy" "this" {
   file_system_id = var.s3_files_file_system_id
   policy = jsonencode({
@@ -248,7 +248,7 @@ resource "aws_s3files_file_system_policy" "this" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        AWS = [aws_iam_role.task.arn]
+        AWS = distinct(concat([aws_iam_role.task.arn], var.s3files_policy_extra_principal_arns))
       }
       Action = [
         "s3files:ClientMount",

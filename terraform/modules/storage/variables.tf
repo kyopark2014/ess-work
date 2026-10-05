@@ -29,12 +29,15 @@ variable "s3files_mount_security_group_id" {
 }
 
 variable "s3_files_session_prefix" {
-  type = string
+  type        = string
+  description = "Runtime S3 Files prefix. Empty omits the API prefix and mounts the bucket root."
+  default     = ""
 }
 
 variable "s3_files_app_data_prefix" {
-  type    = string
-  default = "app-data/"
+  type        = string
+  description = "ECS S3 Files prefix. Empty reuses the Runtime file system."
+  default     = ""
 }
 
 variable "agent_runtime_security_group_id" {

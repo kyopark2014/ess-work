@@ -23,8 +23,7 @@ config_path = os.path.join(script_dir, "config.json")
 favorite_tools_path = os.path.join(script_dir, "favorite_tools.json")
 
 
-# ECS: /mnt/app-data (prefix app-data/) for tasks.db, graph, settings.
-# Runtime: /mnt/workspace (prefix agentcore-sessions/) for skills/artifacts/checkpoints.
+# ECS /mnt/app-data and Runtime /mnt/workspace both mount the bucket root.
 def _default_session_storage_dir() -> str:
     """Prefer ECS app-data mount, then Runtime workspace, then local fallback."""
     for candidate in ("/mnt/app-data", "/mnt/workspace"):
@@ -35,12 +34,29 @@ def _default_session_storage_dir() -> str:
 
 SESSION_STORAGE_DIR = os.environ.get("SESSION_STORAGE_DIR") or _default_session_storage_dir()
 
-# S3 Files FS prefix for Runtime workspace → s3://{bucket}/agentcore-sessions/
-S3_FILES_SESSION_PREFIX = "agentcore-sessions"
-# ECS app-data mount → s3://{bucket}/app-data/
-S3_FILES_APP_DATA_PREFIX = "app-data/"
+# Empty when the S3 Files mount is the storage bucket root.
+S3_FILES_SESSION_PREFIX = ""
+S3_FILES_APP_DATA_PREFIX = ""
 # Browser/Runtime staging uploads (IAM-allowed for Runtime PutObject)
 ESS_DOCS_S3_PREFIX = "session-uploads"
+
+
+def s3files_object_key(prefix: str, *parts: str) -> str:
+    """Join an object key, omitting an empty S3 Files prefix."""
+    bits: list[str] = []
+    head = (prefix or "").strip("/")
+    if head:
+        bits.append(head)
+    for part in parts:
+        piece = str(part or "").strip("/")
+        if piece:
+            bits.append(piece)
+    return "/".join(bits)
+
+
+def session_object_key(*parts: str) -> str:
+    """Join an object key on the session mount."""
+    return s3files_object_key(S3_FILES_SESSION_PREFIX, *parts)
 
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:
@@ -721,14 +737,18 @@ def sync_user_ess_testcases_from_runtime_storage(
     # Runtime post-save publish (S3 API, no NFS lag) + sessions NFS fallback.
     src_prefixes = (
         f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/test_cases/",
-        f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases/",
+        session_object_key(segment, "ess", "test_cases") + "/",
     )
     list_src_keys = (
         f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/test_cases_list.json",
-        f"{S3_FILES_SESSION_PREFIX}/{segment}/ess/test_cases_list.json",
+        session_object_key(segment, "ess", "test_cases_list.json"),
     )
-    dst_cases_prefix = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases/"
-    list_dst_key = f"{S3_FILES_APP_DATA_PREFIX}{segment}/ess/test_cases_list.json"
+    dst_cases_prefix = s3files_object_key(
+        S3_FILES_APP_DATA_PREFIX, segment, "ess", "test_cases"
+    ) + "/"
+    list_dst_key = s3files_object_key(
+        S3_FILES_APP_DATA_PREFIX, segment, "ess", "test_cases_list.json"
+    )
     max_attempts = max(1, int(retries))
     # Never accept "already up to date" on the first peek — new saves lag behind
     # existing objects in the same prefix.
@@ -1211,7 +1231,7 @@ def sync_user_graph_to_runtime_storage(user_id: str | None) -> dict[str, int]:
         logger.warning("skip graph→runtime mirror: s3_bucket not configured")
         return {"uploaded": 0, "deleted": 0}
 
-    dest_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/graph/"
+    dest_prefix = session_object_key(segment, "graph") + "/"
     local_files: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(graph_root):
         dirnames[:] = [d for d in dirnames if d not in _GRAPH_MIRROR_SKIP_DIR_NAMES]
@@ -1500,7 +1520,7 @@ def _list_user_skill_names_from_s3(user_id: str | None) -> list[str]:
         # Fall back to local workspace mount when present (local/runtime).
         return _list_skill_dir_names(get_user_skills_dir(user_id))
 
-    prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/skills/"
+    prefix = session_object_key(segment, "skills") + "/"
     try:
         s3 = boto3.client("s3", region_name=region)
         paginator = s3.get_paginator("list_objects_v2")
@@ -1825,7 +1845,7 @@ def session_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
     """Build ``agentcore-sessions/{user}/upload/{file}`` object key."""
     segment = _sanitize_s3_user_segment(user_id) or "default"
     safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{S3_FILES_SESSION_PREFIX}/{segment}/upload/{safe_name}"
+    return session_object_key(segment, "upload", safe_name)
 
 
 def _session_upload_content_type(file_name: str) -> str:
@@ -2775,7 +2795,7 @@ def ess_md_runtime_workspace_s3_key(
     safe_name = os.path.basename(file_name or "").strip() or "document.md"
     if not safe_name.lower().endswith(".md"):
         safe_name = f"{os.path.splitext(safe_name)[0]}.md"
-    return f"{S3_FILES_SESSION_PREFIX}/{segment}/artifacts/md/{safe_name}"
+    return session_object_key(segment, "artifacts", "md", safe_name)
 
 
 def ess_md_artifacts_public_url(

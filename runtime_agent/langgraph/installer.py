@@ -465,6 +465,7 @@ def _upsert_managed_policy(
 # via S3 API.
 RUNTIME_S3_OBJECT_PREFIXES = (
     "artifacts/",
+    "*/artifacts/",
     "images/",
     "docs/",
     "session-uploads/",

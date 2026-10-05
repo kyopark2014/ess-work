@@ -315,7 +315,7 @@ resource "aws_cloudfront_distribution" "this" {
   }
 
   dynamic "ordered_cache_behavior" {
-    for_each = toset(["/images/*", "/docs/*", "/artifacts/*"])
+    for_each = toset(["/images/*", "/docs/*", "/artifacts/*", "/*/artifacts/*"])
     content {
       path_pattern             = ordered_cache_behavior.value
       target_origin_id         = "s3"

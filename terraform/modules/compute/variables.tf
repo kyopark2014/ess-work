@@ -64,6 +64,12 @@ variable "agent_runtime_role_arn" {
   type = string
 }
 
+variable "s3files_policy_extra_principal_arns" {
+  type        = list(string)
+  description = "Extra mount principals when ECS shares the Runtime file system."
+  default     = []
+}
+
 variable "session_signing_key_secret_arn" {
   type = string
 }

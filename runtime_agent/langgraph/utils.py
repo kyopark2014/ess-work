@@ -60,8 +60,8 @@ def truncate_for_stream(text: object, max_chars: int = STREAM_TRUNCATE_CHARS) ->
     return truncate_text(text, max_chars)
 
 
-S3_FILES_SESSION_PREFIX = "agentcore-sessions"
-S3_FILES_APP_DATA_PREFIX = "app-data/"
+S3_FILES_SESSION_PREFIX = ""
+S3_FILES_APP_DATA_PREFIX = ""
 
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:

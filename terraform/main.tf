@@ -107,6 +107,7 @@ module "agentcore" {
   s3_files_file_system_id         = module.storage.file_system_id
   s3_files_file_system_arn        = module.storage.file_system_arn
   s3_files_access_point_arn       = module.storage.access_point_arn
+  manage_s3files_policy           = !module.storage.shares_bucket_root
   s3_bucket_arn                   = module.data.s3_bucket_arn
   s3_bucket_name                  = module.data.s3_bucket_name
   sharing_url                     = module.edge.sharing_url
@@ -156,6 +157,8 @@ locals {
     s3_files_app_data_file_system_id   = module.storage.app_data_file_system_id
     s3_files_app_data_access_point_arn = module.storage.app_data_access_point_arn
     s3_files_app_data_mount_path       = var.app_data_mount_path
+    s3_files_session_prefix            = trim(var.s3_files_session_prefix, "/")
+    s3_files_app_data_prefix           = trim(var.s3_files_app_data_prefix, "/")
     agent_runtime_vpc_subnets          = module.network.private_subnet_ids
     agent_runtime_security_groups      = [module.network.agent_runtime_security_group_id]
     agent_runtime_arn                  = module.agentcore.agent_runtime_arn
@@ -172,18 +175,21 @@ locals {
 module "compute" {
   source = "./modules/compute"
 
-  project_name                      = var.project_name
-  region                            = var.region
-  vpc_id                            = module.network.vpc_id
-  private_subnet_ids                = module.network.private_subnet_ids
-  ecs_security_group_id             = module.network.ecs_security_group_id
-  app_port                          = var.app_port
-  app_data_mount_path               = var.app_data_mount_path
-  target_group_arn                  = module.edge.target_group_arn
-  s3_bucket_arn                     = module.data.s3_bucket_arn
-  s3_files_file_system_id           = module.storage.app_data_file_system_id
-  s3_files_file_system_arn          = module.storage.app_data_file_system_arn
-  s3_files_access_point_arn         = module.storage.app_data_access_point_arn
+  project_name              = var.project_name
+  region                    = var.region
+  vpc_id                    = module.network.vpc_id
+  private_subnet_ids        = module.network.private_subnet_ids
+  ecs_security_group_id     = module.network.ecs_security_group_id
+  app_port                  = var.app_port
+  app_data_mount_path       = var.app_data_mount_path
+  target_group_arn          = module.edge.target_group_arn
+  s3_bucket_arn             = module.data.s3_bucket_arn
+  s3_files_file_system_id   = module.storage.app_data_file_system_id
+  s3_files_file_system_arn  = module.storage.app_data_file_system_arn
+  s3_files_access_point_arn = module.storage.app_data_access_point_arn
+  s3files_policy_extra_principal_arns = (
+    module.storage.shares_bucket_root ? [module.agentcore.agent_runtime_role_arn] : []
+  )
   agent_runtime_role_arn            = module.agentcore.agent_runtime_role_arn
   session_signing_key_secret_arn    = module.auth.session_signing_key_secret_arn
   cloudfront_signing_key_secret_arn = module.auth.cloudfront_signing_key_secret_arn

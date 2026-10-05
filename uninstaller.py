@@ -70,6 +70,15 @@ SCHEDULER_INVOKE_ROLE_NAME = f"role-scheduler-invoke-for-{project_name}-{region}
 SCHEDULE_GROUP_NAME = f"schedule-group-{project_name}"
 CLOUDFRONT_SIGNING_KEY_SECRET_NAME = f"{project_name}/cloudfront-signing-key"
 
+
+def _belongs_to_project(name: str) -> bool:
+    """Match this project only. Substring checks treat ess-work as harness-work."""
+    if not name or name == "default":
+        return False
+    if name == project_name:
+        return True
+    return name.endswith(f"-{project_name}") or name.endswith(f"_{project_name}")
+
 # Configure logging
 def setup_logging():
     logging.basicConfig(
@@ -88,7 +97,7 @@ def delete_cloudfront_distributions():
     try:
         distributions = cloudfront_client.list_distributions()
         for dist in distributions.get("DistributionList", {}).get("Items", []):
-            if project_name in dist.get("Comment", ""):
+            if _belongs_to_project(dist.get("Comment", "")):
                 dist_id = dist["Id"]
                 logger.info(f"  Disabling distribution: {dist_id}")
                 
@@ -118,7 +127,7 @@ def delete_disabled_cloudfront_distributions():
     try:
         distributions = cloudfront_client.list_distributions()
         for dist in distributions.get("DistributionList", {}).get("Items", []):
-            if project_name in dist.get("Comment", "") and not dist.get("Enabled", True):
+            if _belongs_to_project(dist.get("Comment", "")) and not dist.get("Enabled", True):
                 dist_id = dist["Id"]
                 logger.info(f"  Deleting disabled distribution: {dist_id}")
                 
@@ -209,7 +218,7 @@ def delete_nat_gateways():
                         ]
                     )
                     for tag in tags_response.get("Tags", []):
-                        if tag.get("Key") == "Name" and project_name in tag.get("Value", ""):
+                        if tag.get("Key") == "Name" and _belongs_to_project(tag.get("Value", "")):
                             project_nat_gws.append(nat_gw)
                             logger.info(f"  Found NAT gateway to delete: {nat_gw_id} ({tag.get('Value')})")
                             break
@@ -800,7 +809,7 @@ def delete_vpc_resources():
                 has_project_subnets = False
                 for subnet in subnets.get("Subnets", []):
                     for tag in subnet.get("Tags", []):
-                        if project_name in tag.get("Value", ""):
+                        if _belongs_to_project(tag.get("Value", "")):
                             has_project_subnets = True
                             break
                     if has_project_subnets:
@@ -812,7 +821,7 @@ def delete_vpc_resources():
                 )
                 has_project_sgs = False
                 for sg in sgs.get("SecurityGroups", []):
-                    if project_name in sg.get("GroupName", ""):
+                    if _belongs_to_project(sg.get("GroupName", "")):
                         has_project_sgs = True
                         break
                 
@@ -831,7 +840,7 @@ def delete_vpc_resources():
                             ]
                         )
                         for tag in tags_response.get("Tags", []):
-                            if project_name in tag.get("Value", ""):
+                            if _belongs_to_project(tag.get("Value", "")):
                                 has_project_nat = True
                                 break
                         if has_project_nat:
@@ -1113,7 +1122,7 @@ def delete_security_groups():
         for sg in all_sgs.get("SecurityGroups", []):
             sg_name = sg.get("GroupName", "")
             # Check if security group name contains project name
-            if project_name in sg_name and sg_name != "default":
+            if _belongs_to_project(sg_name):
                 sgs_to_delete.append({
                     "GroupId": sg["GroupId"],
                     "GroupName": sg_name,
@@ -1464,7 +1473,7 @@ def force_delete_specific_security_group():
         for sg in all_sgs.get("SecurityGroups", []):
             sg_name = sg.get("GroupName", "")
             # Check if security group name contains project name and is not default
-            if project_name in sg_name and sg_name != "default":
+            if _belongs_to_project(sg_name):
                 remaining_sgs.append({
                     "GroupId": sg["GroupId"],
                     "GroupName": sg_name,

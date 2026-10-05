@@ -250,6 +250,8 @@ resource "aws_iam_role_policy" "runtime" {
             "s3:prefix" = [
               "artifacts",
               "artifacts/*",
+              "*/artifacts",
+              "*/artifacts/*",
               "images",
               "images/*",
               "docs",
@@ -264,6 +266,7 @@ resource "aws_iam_role_policy" "runtime" {
         Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = [
           "${var.s3_bucket_arn}/artifacts/*",
+          "${var.s3_bucket_arn}/*/artifacts/*",
           "${var.s3_bucket_arn}/images/*",
           "${var.s3_bucket_arn}/docs/*",
         ]
@@ -613,8 +616,9 @@ resource "null_resource" "docker_build" {
 }
 
 
-# Session FS policy: Runtime only (ECS uses dedicated app-data FS).
+# Session FS policy: Runtime only. Skipped when ECS shares this file system.
 resource "aws_s3files_file_system_policy" "session" {
+  count          = var.manage_s3files_policy ? 1 : 0
   file_system_id = var.s3_files_file_system_id
   policy = jsonencode({
     Version = "2012-10-17"
