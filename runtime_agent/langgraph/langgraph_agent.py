@@ -11,6 +11,7 @@ except ImportError:  # script-style / AgentCore runtime flat imports
     import chat
     import run_cancel
 import utils
+import unicode_paths
 import agentcore_sigv4_auth
 import sys
 import subprocess
@@ -508,7 +509,7 @@ def _upload_file_to_project_s3(filepath: str, full_path: str | None = None) -> s
     if not s3_bucket:
         raise RuntimeError("S3 bucket is not configured.")
 
-    resolved = full_path or _resolve_workdir_path(filepath)
+    resolved = unicode_paths.resolve_existing_path(full_path or _resolve_workdir_path(filepath))
     if not os.path.exists(resolved):
         raise FileNotFoundError(f"File not found: {filepath} (resolved: {resolved})")
 
@@ -785,7 +786,7 @@ def execute_code(code: str) -> str:
         _ensure_matplotlib_runtime()
         _ensure_node_path()
         
-        exec(code, _exec_globals)
+        exec(unicode_paths.rewrite_command_unicode_paths(code), _exec_globals)
 
         sys.stdout, sys.stderr = old_stdout, old_stderr
         os.chdir(old_cwd)
@@ -851,7 +852,7 @@ def write_file(filepath: str, content: str = "") -> str:
         )
     logger.info(f"###### write_file: {filepath} ######")
     try:
-        full_path = _resolve_workdir_path(filepath)
+        full_path = unicode_paths.resolve_existing_path(_resolve_workdir_path(filepath))
         parent = os.path.dirname(full_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -878,7 +879,7 @@ def read_file(filepath: str) -> str:
     """
     logger.info(f"###### read_file: {filepath} ######")
     try:
-        full_path = _resolve_workdir_path(filepath)
+        full_path = unicode_paths.resolve_existing_path(_resolve_workdir_path(filepath))
         with open(full_path, "r", encoding="utf-8") as f:
             return f.read()
     except Exception as e:
@@ -923,6 +924,7 @@ def bash(command: str) -> str:
     SKILL_DIR="$SKILLS_DIR/last30days" "${SKILL_DIR}/scripts/last30days.py" ...
     Or use the absolute SKILL_DIR=... from get_skill_instructions on that call only.
     """
+    command = unicode_paths.rewrite_command_unicode_paths(command)
     logger.info(f"###### bash: {command} ######")
     _ensure_cli_scripts_on_path()
     _ensure_user_site_on_sys_path()
