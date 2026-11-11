@@ -89,12 +89,19 @@ def get_application_config(user_id: str | None = None) -> dict[str, Any]:
         default_skills = ["skill-creator"]
     if not default_mcp:
         logger.info("No initial MCP defaults matched current capability list")
+    # Per-user Settings (model / Guardrail / Memory) shared by all tasks.
+    flags = utils.get_user_task_feature_flags(user_id)
+    default_model = utils.get_user_preferred_model(user_id) or DEFAULT_MODEL
+    if default_model not in MODELS:
+        default_model = DEFAULT_MODEL
     return {
         **get_public_config(),
         "skills": skill_options,
         "mcp_servers": mcp_options,
         "models": MODELS,
-        "default_model": DEFAULT_MODEL,
+        "default_model": default_model,
         "default_skills": default_skills,
         "default_mcp_servers": default_mcp,
+        "default_guardrail_enabled": flags["guardrail_enabled"],
+        "default_memory_enabled": flags["memory_enabled"],
     }
