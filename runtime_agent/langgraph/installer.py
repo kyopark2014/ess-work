@@ -540,7 +540,7 @@ def create_bedrock_agentcore_policy(config):
     projectName = config.get('projectName', 'agentcore')
     gateway_region = config.get(
         "agentcore_websearch_gateway_region",
-        config.get("agentcore_gateway_region", "us-east-1"),
+        config.get("agentcore_gateway_region", "us-west-2"),
     )
     runtime_resource_arns = _project_agent_runtime_resource_arns(config)
     secret_arns = _project_secret_resource_arns(config)
